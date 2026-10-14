@@ -23,6 +23,7 @@
   "author": "snhsish",
   "license": "MIT",
   "devDependencies": {
+    "@types/cross-spawn": "^6.0.6",
     "@types/node": "^26.0.0",
     "@types/qrcode-terminal": "^0.12.2",
     "@types/ws": "^8.5.13",
@@ -33,6 +34,7 @@
     "@crosscode/shared": "workspace:^",
     "@sentry/node": "^10",
     "chalk": "^5.6.2",
+    "cross-spawn": "^7.0.6",
     "ora": "^9.4.1",
     "qrcode-terminal": "^0.12.0",
     "ws": "^8.18.0"

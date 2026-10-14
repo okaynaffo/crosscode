@@ -4,7 +4,7 @@ import { readFile } from "fs/promises"
 import chalk from "chalk"
 import qrcode from "qrcode-terminal"
 import { encodeQrPayload } from "@crosscode/shared"
-import { debug, checkDep, setLogWriter, getFreePort } from "./util"
+import { debug, checkDep, setLogWriter, getFreePort, terminateChild } from "./util"
 import { logCrosscode, closeAllLogs, crosscodeLogFile, cloudflaredLogFile, opencodeLogFile } from "./log"
 import { readConfig, saveConfig, getProjectConfig, ensureSessionToken, resolveOpencodeBin } from "./config"
 import { initSentry, captureCliError } from "./sentry"
@@ -186,10 +186,10 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
 
     // Fix C1: cloudflared fallback is invoked as a function, not gated behind an
     // else-if that already evaluated before the async tunnel error occurs.
-    const launchCloudflaredFallback = () => {
-        children.forEach(c => c.kill())
+    const launchCloudflaredFallback = async () => {
+        await Promise.all(children.map(terminateChild))
         children.length = 0
-        startCloudflaredProvider(
+        await startCloudflaredProvider(
             config, project, port, children,
             () => isShuttingDown,
             (url) => { tunnelUrl = url },
@@ -201,7 +201,7 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
         await startTunnelProvider(config, project, port, children, {
             onTunnelUrl: (url) => { tunnelUrl = url },
             printQr: printTunnelQr,
-            onFallbackNeeded: launchCloudflaredFallback,
+            onFallbackNeeded: () => { void launchCloudflaredFallback().catch(handleFatalError) },
         })
     } else if (tunnelProvider === "ngrok") {
         await startNgrokProvider(
@@ -256,7 +256,7 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
         console.log(chalk.yellow("\nShutting down..."))
         logCrosscode(`Shutting down... (source: ${source || "unknown"})`)
         debug("shutdown initiated", { source: source || "unknown" })
-        children.forEach(c => c.kill())
+        await Promise.all(children.map(terminateChild))
         cleanupKeypress()
         proxyAgent.destroy()
         await closeAllLogs()
@@ -288,15 +288,17 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
     })
 }
 
-main()
-    .catch(async err => {
-        console.error(chalk.red(err))
-        logCrosscode("Fatal error: " + (err instanceof Error ? err.message : String(err)))
-        try {
-            captureCliError(err)
-            await Sentry.flush(2000)
-        } catch {}
-        proxyAgent.destroy()
-        await closeAllLogs()
-        process.exit(1)
-    })
+async function handleFatalError(err: unknown) {
+    console.error(chalk.red(err))
+    logCrosscode("Fatal error: " + (err instanceof Error ? err.message : String(err)))
+    await Promise.all(children.map(terminateChild))
+    try {
+        captureCliError(err)
+        await Sentry.flush(2000)
+    } catch {}
+    proxyAgent.destroy()
+    await closeAllLogs()
+    process.exit(1)
+}
+
+main().catch(handleFatalError)
