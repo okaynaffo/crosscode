@@ -2,14 +2,13 @@
 
 import { readFile } from "fs/promises"
 import chalk from "chalk"
-import qrcode from "qrcode-terminal"
-import { encodeQrPayload } from "@crosscode/shared"
 import { debug, checkDep, setLogWriter, getFreePort, terminateChild } from "./util"
 import { logCrosscode, closeAllLogs, crosscodeLogFile, cloudflaredLogFile, opencodeLogFile } from "./log"
 import { readConfig, saveConfig, getProjectConfig, ensureSessionToken, resolveOpencodeBin } from "./config"
 import { initSentry, captureCliError } from "./sentry"
 import * as Sentry from "@sentry/node"
 import { loginFlow, refreshTier } from "./auth"
+import { printTunnelQr as renderTunnelQr } from "./qr"
 import { proxyAgent } from "./proxy"
 import { onKeypress, cleanupKeypress } from "./keypress"
 import { startTunnelProvider } from "./providers/tunnel"
@@ -22,14 +21,11 @@ let isShuttingDown = false
 setLogWriter(logCrosscode)
 
 function printTunnelQr(url: string, token: string, opencodePort: number, requestedPort: number) {
-    const payload = encodeQrPayload({ url, token, v: 1 })
-    if (opencodePort !== requestedPort) {
-        console.log(chalk.yellow(`opencode running on port ${opencodePort}`))
-    }
-    console.log(chalk.cyanBright("\n Scan with CrossCode App:"))
-    qrcode.generate(payload, { small: true })
-    console.log(chalk.grey(`URL: ${url}`))
-    console.log(chalk.dim.bold("[Press 'l' for logs  •  'h' for help  •  Ctrl+C to exit]"))
+    const argv = process.argv.slice(2)
+    renderTunnelQr(url, token, opencodePort, requestedPort, {
+        disabled: argv.includes("--no-qr"),
+        small: argv.includes("--small-qr") || process.env.CROSSCODE_QR_SMALL === "1",
+    })
 }
 
 function printHelp() {
@@ -105,6 +101,8 @@ ${chalk.yellow.bold("COMMANDS:")}
 ${chalk.yellow.bold("OPTIONS:")}
   ${chalk.green("--cloudflared")}      Use Cloudflare tunnel (default for free tier)
   ${chalk.green("--ngrok")}            Use ngrok tunnel (requires auth token)
+  ${chalk.green("--no-qr")}            Skip QR graphic, print URL only
+  ${chalk.green("--small-qr")}         Compact QR graphic (smaller margin)
   ${chalk.green("--help, -h")}         Show this help message
 
 ${chalk.yellow.bold("EXAMPLES:")}
