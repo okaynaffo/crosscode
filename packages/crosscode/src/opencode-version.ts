@@ -1,4 +1,4 @@
-import { execFile } from "child_process"
+import { spawnCmd } from "./util"
 
 export type OpencodeMajor = 1 | 2
 
@@ -20,8 +20,14 @@ function parseMajor(output: string): OpencodeMajor {
 export function detectOpencodeMajor(bin = "opencode"): Promise<OpencodeMajor> {
     if (cached && cached.bin === bin) return Promise.resolve(cached.major)
     return new Promise((resolve) => {
-        execFile(bin, ["--version"], { encoding: "utf8", timeout: 8000 }, (err, stdout) => {
-            const major = parseMajor(err ? "" : stdout)
+        const proc = spawnCmd(bin, ["--version"], { timeout: 8000, stdio: ["ignore", "pipe", "pipe"] })
+        let stdout = ""
+        let stderr = ""
+        proc.stdout?.on("data", data => { stdout += data.toString() })
+        proc.stderr?.on("data", data => { stderr += data.toString() })
+        proc.once("error", () => resolve(1))
+        proc.once("close", code => {
+            const major = parseMajor(code === 0 ? stdout + stderr : "")
             cached = { bin, major }
             resolve(major)
         })

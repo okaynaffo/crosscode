@@ -8,11 +8,14 @@ const PORT_PATTERNS = [
     /listening on (?:https?:\/\/)?[^\s"']*?:(\d+)/i,
 ]
 
-function probePort(port: number, healthPath: string): Promise<boolean> {
+function probePort(port: number, healthPath: string, sessionToken?: string): Promise<boolean> {
     return new Promise((resolve) => {
-        const req = http.get({ host: "127.0.0.1", port, path: healthPath, timeout: 700 }, (res) => {
+        const headers = sessionToken ? {
+            Authorization: `Basic ${Buffer.from(`opencode:${sessionToken}`).toString("base64")}`,
+        } : undefined
+        const req = http.get({ host: "127.0.0.1", port, path: healthPath, headers, timeout: 700 }, (res) => {
             res.resume()
-            resolve(true)
+            resolve(res.statusCode !== undefined && res.statusCode >= 200 && res.statusCode < 300)
         })
         req.on("timeout", () => {
             req.destroy()
@@ -71,19 +74,19 @@ export function waitForOpencodePort(opts: {
     proc: ChildProcess
     requestedPort: number
     healthPath?: string
+    sessionToken?: string
     onData?: (data: Buffer) => void
     timeoutMs?: number
 }): Promise<number> {
-    const { proc, requestedPort, healthPath = "/global/health", onData, timeoutMs = 15_000 } = opts
+    const { proc, requestedPort, healthPath = "/global/health", sessionToken, onData, timeoutMs = 15_000 } = opts
 
     let buffer = ""
     let resolved = false
-    let exited = false
     let probing = false
 
     const collect = (data: Buffer) => {
         if (onData) onData(data)
-        buffer += data.toString()
+        if (!resolved) buffer += data.toString()
     }
     proc.stdout?.on("data", collect)
     proc.stderr?.on("data", collect)
@@ -97,23 +100,39 @@ export function waitForOpencodePort(opts: {
     }
 
     return new Promise<number>((resolve, reject) => {
+        const cleanup = () => {
+            clearInterval(interval)
+            clearTimeout(timeout)
+            proc.removeListener("exit", onExit)
+            proc.removeListener("error", onError)
+        }
         const finish = (port: number) => {
             if (resolved) return
             resolved = true
-            clearInterval(interval)
-            clearTimeout(timeout)
+            cleanup()
             resolve(port)
+        }
+        const fail = (err: Error) => {
+            if (resolved) return
+            resolved = true
+            cleanup()
+            reject(err)
+        }
+        const onExit = (code: number | null) => {
+            fail(new Error(`opencode exited with code ${code} before the server was ready`))
+        }
+        const onError = (err: Error) => {
+            fail(new Error(`Failed to start opencode serve: ${err.message}`))
         }
 
         const interval = setInterval(async () => {
-            const logged = fromLogs()
-            if (logged) return finish(logged)
-
-            if (exited || probing) return
+            if (resolved || probing) return
             probing = true
-            const alive = await probePort(requestedPort, healthPath)
+            const logged = fromLogs()
+            const candidate = logged ?? requestedPort
+            const alive = await probePort(candidate, healthPath, sessionToken)
             probing = false
-            if (alive) return finish(requestedPort)
+            if (alive) finish(candidate)
         }, 250)
 
         const timeout = setTimeout(async () => {
@@ -122,26 +141,19 @@ export function waitForOpencodePort(opts: {
             // unverified port is what produced a scannable-but-dead QR
             // in #128.
             const logged = fromLogs()
-            if (logged && await probePort(logged, healthPath)) return finish(logged)
+            if (logged && await probePort(logged, healthPath, sessionToken)) return finish(logged)
+            if (resolved) return
             const ports = (await getListeningPorts(proc.pid)).filter((p) => p > 0 && p <= 65535)
             for (const p of ports) {
-                if (await probePort(p, healthPath)) return finish(p)
+                if (resolved) return
+                if (await probePort(p, healthPath, sessionToken)) return finish(p)
             }
-            if (await probePort(requestedPort, healthPath)) return finish(requestedPort)
-            if (logged) return finish(logged)
-            if (ports.length > 0) return finish(ports[0])
-            finish(requestedPort)
+            if (await probePort(requestedPort, healthPath, sessionToken)) return finish(requestedPort)
+            fail(new Error(`Timed out waiting for opencode to become ready on port ${logged ?? requestedPort}`))
         }, timeoutMs)
 
-        proc.on("exit", (code) => {
-            exited = true
-            clearInterval(interval)
-            clearTimeout(timeout)
-            if (resolved) return
-            const logged = fromLogs()
-            if (logged) return finish(logged)
-            resolved = true
-            reject(new Error(`opencode exited with code ${code} before port was detected`))
-        })
+        proc.once("exit", onExit)
+        proc.once("error", onError)
+        if (proc.exitCode !== null || proc.signalCode !== null) onExit(proc.exitCode)
     })
 }

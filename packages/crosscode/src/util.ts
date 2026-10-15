@@ -1,4 +1,5 @@
-import { spawn, execFileSync } from "child_process"
+import { spawn, execFile, execFileSync, type ChildProcess } from "child_process"
+import crossSpawn from "cross-spawn"
 import net from "net"
 import chalk from "chalk"
 
@@ -56,7 +57,24 @@ export function getFreePort(): Promise<number> {
 }
 
 export function spawnCmd(cmd: string, args: string[], opts: Parameters<typeof spawn>[2] = {}) {
-    return spawn(cmd, args, { ...opts, shell: false })
+    // Resolve Windows npm .cmd shims and escape their arguments without
+    // enabling a shell for native executables or Unix commands.
+    return crossSpawn(cmd, args, { ...opts, shell: false })
+}
+
+export async function terminateChild(proc: ChildProcess): Promise<void> {
+    if (!proc.pid || proc.exitCode !== null || proc.signalCode !== null) return
+    if (process.platform !== "win32") {
+        proc.kill()
+        return
+    }
+    // Killing only cmd.exe leaves the server launched by an npm shim alive.
+    await new Promise<void>(resolve => {
+        execFile("taskkill", ["/pid", String(proc.pid), "/t", "/f"], { windowsHide: true, timeout: 5000 }, err => {
+            if (err) proc.kill()
+            resolve()
+        })
+    })
 }
 
 export function openBrowser(url: string): void {

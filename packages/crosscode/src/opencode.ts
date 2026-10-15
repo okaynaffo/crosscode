@@ -40,17 +40,10 @@ export async function startOpencode(opts: {
 
     children.push(proc)
 
-    // Fail fast when the binary can't even spawn (missing executable):
-    // reject here so callers never print a QR for a dead backend.
-    let spawnError: Error | null = null
-    const spawnFailed = new Promise<never>((_, reject) => {
-        proc.once("error", (err) => {
-            spawnError = err
-            spinner.fail(chalk.red.italic(`Failed to start ${opencodeBin} serve`))
-            logCrosscode(`${opencodeBin} serve error: ${err.message}`)
-            debug("opencode spawn error", { bin: opencodeBin, error: err.message })
-            reject(new Error(`Failed to start ${opencodeBin} serve: ${err.message}`))
-        })
+    proc.once("error", (err) => {
+        spinner.fail(chalk.red.italic(`Failed to start ${opencodeBin} serve`))
+        logCrosscode(`${opencodeBin} serve error: ${err.message}`)
+        debug("opencode spawn error", { bin: opencodeBin, error: err.message })
     })
 
     proc.on("spawn", () => {
@@ -59,16 +52,13 @@ export async function startOpencode(opts: {
         debug("opencode spawned", { bin: opencodeBin, pid: proc.pid })
     })
 
-    const detectedPort = await Promise.race([
-        spawnFailed,
-        waitForOpencodePort({
-            proc,
-            requestedPort: port,
-            healthPath: serverVersion >= 2 ? "/api/info" : "/global/health",
-            onData: d => opencodeLogStream.write(d),
-        }),
-    ])
-    void spawnError
+    const detectedPort = await waitForOpencodePort({
+        proc,
+        requestedPort: port,
+        healthPath: serverVersion >= 2 ? "/api/info" : "/global/health",
+        sessionToken,
+        onData: d => opencodeLogStream.write(d),
+    })
 
     if (detectedPort !== port) {
         logCrosscode(`Using detected port ${detectedPort} instead of requested port ${port}`)
