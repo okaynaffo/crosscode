@@ -17,7 +17,6 @@ import { useConnections } from "@/store/connection.store"
 import { useSessions } from "@/store/sessions.store"
 import { useSettings } from "@/store/settings.store"
 import { ShareSessionModal } from "@/components/share-session-modal"
-import { SettingsDivider } from "@/components/settings"
 
 interface SessionHeaderProps {
     projectId: string
@@ -144,16 +143,13 @@ function SessionHeaderInner({
                                 </Pressable>
 
                                 {allowTerminal && (
-                                    <>
-                                        <SettingsDivider />
-                                        <Pressable
-                                            className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
-                                            onPress={() => handleNavigate(`/project/${projectId}/${sessionId}/git-graph`)}
-                                        >
-                                            <GitBranchIcon size={16} color={THEME[theme].mutedForeground} />
-                                            <Text className="text-sm text-foreground">Git graph</Text>
-                                        </Pressable>
-                                    </>
+                                    <Pressable
+                                        className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
+                                        onPress={() => handleNavigate(`/project/${projectId}/${sessionId}/git-graph`)}
+                                    >
+                                        <GitBranchIcon size={16} color={THEME[theme].mutedForeground} />
+                                        <Text className="text-sm text-foreground">Git graph</Text>
+                                    </Pressable>
                                 )}
                             </View>
 
