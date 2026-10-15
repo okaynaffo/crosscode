@@ -18,7 +18,7 @@ import { Text } from "@/components/ui/text"
 import { getMessages } from "@/lib/messages"
 import { Pressable } from "react-native"
 import { Button } from "@/components/ui/button"
-import { MessageItem } from "@/components/message-item"
+import { MessageItem, AssistantResponseGroup } from "@/components/message-item"
 import { SessionHeader } from "@/components/session-header"
 import { ChatInput, ImageAttachment } from "@/components/chat-input"
 import { useEventStream } from "@/components/hooks/event-stream"
@@ -116,7 +116,7 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
 
     const voice = useVoiceInput()
 
-    const scrollRef = useRef<FlatList<Message>>(null)
+    const scrollRef = useRef<FlatList<any>>(null)
 
     useEffect(() => {
         const showListener = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow", (e) => {
@@ -816,35 +816,98 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
         [rawMessages]
     )
 
+    // Consecutive assistant messages belong to a single agent response.
+    // Group them so the response renders as one flow with a single
+    // aggregated token/cost footer once the whole group completes.
+    type DisplayItem =
+        | { kind: "user"; key: string; message: Message }
+        | { kind: "assistant-group"; key: string; messages: Message[] }
+
+    const displayItems = useMemo<DisplayItem[]>(() => {
+        const sorted = [...rawMessages].sort(
+            (a, b) => (a.time?.created ?? 0) - (b.time?.created ?? 0)
+        )
+        const asc: DisplayItem[] = []
+        let currentAssistant: Message[] = []
+        const flushAssistant = () => {
+            if (currentAssistant.length > 0) {
+                asc.push({
+                    kind: "assistant-group",
+                    // Anchor the key to the first message so the row stays stable
+                    // while the turn grows (new assistant messages join the group
+                    // instead of mounting a new row per message part).
+                    key: currentAssistant[0].id,
+                    messages: [...currentAssistant],
+                })
+                currentAssistant = []
+            }
+        }
+        for (const m of sorted) {
+            if (m.role === "assistant") {
+                currentAssistant.push(m)
+            } else {
+                flushAssistant()
+                asc.push({ kind: "user", key: m.id, message: m })
+            }
+        }
+        flushAssistant()
+        // Inverted list: newest first.
+        return asc.reverse()
+    }, [rawMessages])
+
     const renderItem = useCallback(
-        ({ item }: { item: Message }) => {
-            const hasQuestionTool = item.parts?.some(
-                (p) =>
-                    (p.type === "tool-invocation" && p.toolInvocation.toolName === "question") ||
-                    (p.type === "tool" && p.tool === "question")
+        ({ item }: { item: DisplayItem }) => {
+            if (item.kind === "user") {
+                const userMsg = item.message
+                return (
+                    <MessageItem
+                        message={userMsg}
+                        theme={theme}
+                        projectId={projectId}
+                        sessionId={sessionId}
+                        pendingQuestions={EMPTY_QUESTIONS}
+                        onQuestionReply={handleQuestionReply}
+                        onQuestionReject={handleQuestionReject}
+                        pendingPermissions={permissionsByMessageId.get(userMsg.id) ?? EMPTY_PERMISSIONS}
+                        onPermissionReply={handlePermissionReply}
+                        streaming={false}
+                        queued={userMsg.role === "user" && userMsg.id.startsWith("local-") && !!userMsg.queued}
+                    />
+                )
+            }
+            const groupMessages = item.messages
+            const hasQuestionTool = groupMessages.some((msg) =>
+                msg.parts?.some(
+                    (p) =>
+                        (p.type === "tool-invocation" && p.toolInvocation.toolName === "question") ||
+                        (p.type === "tool" && p.tool === "question")
+                )
             )
-            const messagePermissions = permissionsByMessageId.get(item.id) ?? EMPTY_PERMISSIONS
-            const isStreamingMsg = isStreaming && item.role === "assistant" && !item.time?.completed
+            const groupPermissions: PermissionRequest[] = []
+            for (const msg of groupMessages) {
+                const perms = permissionsByMessageId.get(msg.id)
+                if (perms) groupPermissions.push(...perms)
+            }
+            const isStreamingGroup = isStreaming && groupMessages.some((m) => m.role === "assistant" && !(m as { time?: { completed?: number } }).time?.completed)
             return (
-                <MessageItem
-                    message={item}
+                <AssistantResponseGroup
+                    messages={groupMessages}
                     theme={theme}
                     projectId={projectId}
                     sessionId={sessionId}
                     pendingQuestions={hasQuestionTool ? pendingQuestions : EMPTY_QUESTIONS}
                     onQuestionReply={handleQuestionReply}
                     onQuestionReject={handleQuestionReject}
-                    pendingPermissions={messagePermissions}
+                    pendingPermissions={groupPermissions.length > 0 ? groupPermissions : EMPTY_PERMISSIONS}
                     onPermissionReply={handlePermissionReply}
-                    streaming={isStreamingMsg}
-                    queued={item.role === "user" && item.id.startsWith("local-") && !!item.queued}
+                    streaming={isStreamingGroup}
                 />
             )
         },
         [theme, projectId, sessionId, pendingQuestions, permissionsByMessageId, handleQuestionReply, handleQuestionReject, handlePermissionReply, isStreaming]
     )
 
-    const keyExtractor = useCallback((item: Message) => item.id, [])
+    const keyExtractor = useCallback((item: DisplayItem) => item.key, [])
 
     // Compute the current response "turn": all messages after the last user message.
     // The group start is anchored to the first assistant message of the turn so the
@@ -976,10 +1039,10 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
 
             <ConnectionBanner theme={theme} />
 
-            {messages.length > 0 ? (
+            {displayItems.length > 0 ? (
                 <FlatList
                     ref={scrollRef}
-                    data={messages}
+                    data={displayItems}
                     renderItem={renderItem}
                     keyExtractor={keyExtractor}
                     onContentSizeChange={scrollToBottomOnLoad}
@@ -1006,7 +1069,7 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
                 ListEmptyComponent
             )}
 
-            {!isAtBottom && messages.length > 0 && (
+            {!isAtBottom && displayItems.length > 0 && (
                 <View className="absolute left-0 right-0" style={{ bottom: insets.bottom + 150 + keyboardHeight }}>
                     <View className="items-center">
                         <Button variant="secondary" size="xs" className="rounded-full shadow-md" onPress={scrollToBottom}>
@@ -1017,7 +1080,7 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
                 </View>
             )}
 
-            {turn && turn.startAt != null && messages.length === 0 && (
+            {turn && turn.startAt != null && displayItems.length === 0 && (
                 <View className="px-4 py-2">
                     <WorkingIndicator startedAt={turn.startAt} endedAt={turn.endAt} agentName={turn.agent} />
                 </View>

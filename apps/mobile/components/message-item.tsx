@@ -1,5 +1,5 @@
-import { memo, useState, useRef, useCallback } from "react"
-import { View, Pressable, Modal, Dimensions, Image as RNImage } from "react-native"
+import { memo, useState, useRef, useCallback, useEffect } from "react"
+import { View, Pressable, Modal, Dimensions, Image as RNImage, ActivityIndicator } from "react-native"
 import { Image } from "expo-image"
 import * as Clipboard from "expo-clipboard"
 import TriangleAlertIcon from "lucide-react-native/dist/esm/icons/triangle-alert"
@@ -8,7 +8,7 @@ import CopyIcon from "lucide-react-native/dist/esm/icons/copy"
 import PenLineIcon from "lucide-react-native/dist/esm/icons/pen-line"
 import GitBranchIcon from "lucide-react-native/dist/esm/icons/git-branch"
 import { useRouter } from "expo-router"
-import { Message, Part } from "@/store/messages.store"
+import { AssistantMessage, Message, Part } from "@/store/messages.store"
 import { THEME } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import { Text } from "@/components/ui/text"
@@ -77,17 +77,40 @@ function getErrorLabel(name?: string): string {
     }
 }
 
-function FileImage({ uri, mime }: { uri: string; mime?: string }) {
-    const [stage, setStage] = useState<"expo" | "native" | "failed">(uri.startsWith("data:") ? "native" : "expo")
-    const [fullscreen, setFullscreen] = useState(false)
-    const isDataUrl = uri.startsWith("data:")
+function normalizeImageUri(uri: string, mime?: string): string {
+    if (!uri) return uri
+    if (/^(data:|file:\/\/|content:\/\/|ph:\/\/|asset:\/\/|http:\/\/|https:\/\/)/.test(uri)) return uri
+    // Bare base64 payload (some servers strip the data: prefix) — rebuild it.
+    if (mime?.startsWith("image/") && /^[A-Za-z0-9+/=\s]+$/.test(uri) && uri.length > 100) {
+        return `data:${mime};base64,${uri.replace(/\s/g, "")}`
+    }
+    return uri
+}
 
-    if (stage === "failed") {
+function FileImage({ uri: rawUri, mime }: { uri: string; mime?: string }) {
+    const uri = normalizeImageUri(rawUri, mime)
+    const isDataUrl = uri.startsWith("data:")
+    // expo-image handles file:// and remote urls well but chokes on huge
+    // data: uris (blank box, no onError). React Native's Image handles data:
+    // uris reliably, so prefer it there.
+    const [stage, setStage] = useState<"expo" | "native" | "failed">(isDataUrl ? "native" : "expo")
+    const [loaded, setLoaded] = useState(false)
+    const [fullscreen, setFullscreen] = useState(false)
+    // The uri for a part changes over its lifetime: optimistic message uses
+    // the device-local file:// uri, then the server echo swaps in a data:
+    // url. Reset the renderer when that happens, otherwise expo-image keeps
+    // showing a blank box for the data: payload.
+    useEffect(() => {
+        setStage(isDataUrl ? "native" : "expo")
+        setLoaded(false)
+    }, [uri])
+
+    if (!uri || stage === "failed") {
         return (
             <View className="w-full min-h-40 rounded-xl items-center justify-center bg-muted p-2 gap-1">
                 <Text className="text-xs text-muted-foreground">Image couldn't be displayed</Text>
                 <Text className="text-[10px] text-muted-foreground/70">
-                    {mime ?? "?"} · {uri.length} chars · {uri.slice(0, 48)}
+                    {mime ?? "?"} · {rawUri.length} chars · {rawUri.slice(0, 48)}
                 </Text>
             </View>
         )
@@ -100,6 +123,7 @@ function FileImage({ uri, mime }: { uri: string; mime?: string }) {
                 cachePolicy={isDataUrl ? "memory" : "memory-disk"}
                 transition={0}
                 style={{ width: "100%", height: "100%" }}
+                onLoad={() => setLoaded(true)}
                 onError={(e) => {
                     console.log(`[FileImage] expo failed mime=${mime} len=${uri.length} head=${uri.slice(0, 48)} error=${e.error}`)
                     setStage("native")
@@ -110,6 +134,7 @@ function FileImage({ uri, mime }: { uri: string; mime?: string }) {
                 source={{ uri }}
                 style={{ width: "100%", height: "100%" }}
                 resizeMode="cover"
+                onLoad={() => setLoaded(true)}
                 onError={(e) => {
                     console.log(`[FileImage] native failed mime=${mime} len=${uri.length} head=${uri.slice(0, 48)} error=${e.nativeEvent?.error}`)
                     setStage("failed")
@@ -118,8 +143,11 @@ function FileImage({ uri, mime }: { uri: string; mime?: string }) {
         )
     return (
         <>
-            <Pressable onPress={() => setFullscreen(true)} className="w-full h-40 rounded-xl overflow-hidden bg-muted">
-                {viewer}
+            <Pressable onPress={() => setFullscreen(true)} className="w-full h-40 rounded-xl overflow-hidden bg-muted items-center justify-center">
+                {!loaded && <ActivityIndicator size="small" />}
+                <View className="absolute inset-0">
+                    {viewer}
+                </View>
             </Pressable>
             <Modal visible={fullscreen} transparent animationType="fade" onRequestClose={() => setFullscreen(false)}>
                 <Pressable className="flex-1 bg-black/90 items-center justify-center p-4" onPress={() => setFullscreen(false)}>
@@ -445,6 +473,253 @@ function MessageMetadata({ message, theme }: { message: Message; theme: "light" 
         </View>
     )
 }
+
+function ResponseGroupMetadata({ messages, streaming }: { messages: Message[]; streaming?: boolean }) {
+    const snapshot = useModels.getState()
+    const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant") as AssistantMessage | undefined
+    if (!lastAssistant) return null
+    // Show usage/cost once, only after the entire response group is completed.
+    // While any part of the group is still streaming, hide the footer so the
+    // response reads as a single flow instead of per-message fragments.
+    if (streaming) return null
+    const allCompleted = messages.every((m) => m.role !== "assistant" || !!(m as AssistantMessage).time?.completed)
+    if (!allCompleted) return null
+
+    const model = snapshot.models.find((m) => m.id === lastAssistant.modelID && m.providerID === lastAssistant.providerID)
+    const provider = snapshot.providers.find((p) => p.id === lastAssistant.providerID)
+
+    const modelName = model?.name ?? lastAssistant.modelID
+    const providerName = provider?.name ?? lastAssistant.providerID
+
+    let input = 0
+    let output = 0
+    let reasoning = 0
+    let cacheRead = 0
+    let cacheWrite = 0
+    let cost = 0
+    for (const m of messages) {
+        if (m.role !== "assistant") continue
+        const a = m as AssistantMessage
+        input += a.tokens?.input ?? 0
+        output += a.tokens?.output ?? 0
+        reasoning += a.tokens?.reasoning ?? 0
+        cacheRead += a.tokens?.cache?.read ?? 0
+        cacheWrite += a.tokens?.cache?.write ?? 0
+        cost += a.cost ?? 0
+    }
+    const totalTokens = input + output + reasoning + cacheRead + cacheWrite
+
+    return (
+        <View className="flex-row flex-wrap items-center gap-x-2 gap-y-0.5 mt-2 pt-1.5 border-t border-border/30">
+            <Text className="text-[10px] text-muted-foreground/70">
+                {providerName} / {modelName}
+            </Text>
+            <Text className="text-[10px] text-muted-foreground/70">
+                {formatTokens(totalTokens)} tokens
+            </Text>
+            <Text className="text-[10px] text-muted-foreground/70">
+                ${cost.toFixed(4)}
+            </Text>
+        </View>
+    )
+}
+
+function getGroupPlainText(messages: Message[]): string {
+    return messages.map(getPlainText).filter(Boolean).join("\n")
+}
+
+export interface AssistantGroupProps {
+    messages: Message[]
+    theme: "light" | "dark"
+    projectId: string
+    sessionId: string
+    pendingQuestions?: QuestionRequest[]
+    onQuestionReply?: (requestId: string, answers: string[][]) => void
+    onQuestionReject?: (requestId: string) => void
+    pendingPermissions?: PermissionRequest[]
+    onPermissionReply?: (requestId: string, reply: "once" | "always" | "reject", message?: string) => void
+    streaming?: boolean
+}
+
+function AssistantResponseGroupInner({ messages, theme, projectId, sessionId, pendingQuestions, onQuestionReply, onQuestionReject, pendingPermissions, onPermissionReply, streaming }: AssistantGroupProps) {
+    const router = useRouter()
+    const [showMenu, setShowMenu] = useState(false)
+    const [menuPos, setMenuPos] = useState({ top: 0, left: 0 })
+    const containerRef = useRef<View>(null)
+    const touchPosRef = useRef({ x: 0, y: 0 })
+
+    const connections = useConnections((s) => s.connections)
+    const current = useConnections((s) => s.current)
+    const connection = connections.find((c) => c.id === current) ?? null
+    const upsertSession = useSessions((s) => s.upsertSession)
+
+    const errorMessage = messages.find((m) => m.role === "assistant" && "error" in m && (m as AssistantMessage).error) as AssistantMessage | undefined
+    const hasError = !!errorMessage
+    const agentName = (() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            const mode = (messages[i] as { mode?: string }).mode
+            if (mode) return mode
+        }
+        return null
+    })()
+
+    const closeMenu = useCallback(() => setShowMenu(false), [])
+
+    const handleLongPress = useCallback(() => {
+        const { width: screenW, height: screenH } = Dimensions.get("window")
+        const menuW = 224
+        const menuH = 180
+        const { x, y } = touchPosRef.current
+        const left = Math.min(Math.max(8, x - menuW / 2), screenW - menuW - 8)
+        const top = Math.min(Math.max(8, y + 8), screenH - menuH - 8)
+        setMenuPos({ top, left })
+        setShowMenu(true)
+    }, [])
+
+    const handleTouchStart = useCallback((e: { nativeEvent: { pageX: number; pageY: number } }) => {
+        touchPosRef.current = { x: e.nativeEvent.pageX, y: e.nativeEvent.pageY }
+    }, [])
+
+    const handleCopyFull = useCallback(async () => {
+        closeMenu()
+        const text = getGroupPlainText(messages)
+        if (text) {
+            await Clipboard.setStringAsync(text)
+        }
+    }, [messages, closeMenu])
+
+    const handleSelectiveCopy = useCallback(() => {
+        closeMenu()
+        const text = getGroupPlainText(messages)
+        if (text) {
+            useSelectiveCopy.getState().setText(text)
+            router.push(`/project/${projectId}/${sessionId}/selective-copy`)
+        }
+    }, [messages, closeMenu, router, projectId, sessionId])
+
+    const handleRevert = useCallback(async () => {
+        closeMenu()
+        if (!connection?.url || !connection?.token) return
+        // Revert the whole response group by targeting its first message.
+        await revertMessage(connection.url, connection.token, sessionId, messages[0].id)
+    }, [connection, sessionId, messages, closeMenu])
+
+    const handleFork = useCallback(async () => {
+        closeMenu()
+        if (!connection?.url || !connection?.token) return
+        const forked = await forkSession(connection.url, connection.token, sessionId, messages[0].id)
+        if (forked) {
+            upsertSession(forked)
+            router.push(`/project/${projectId}/${forked.id}`)
+        }
+    }, [connection, sessionId, messages, projectId, router, upsertSession, closeMenu])
+
+    const lastMessage = messages[messages.length - 1]
+    const lastPartsLength = lastMessage.parts?.length ?? 0
+
+    return (
+        <Pressable
+            ref={containerRef}
+            className={cn(
+                "flex flex-col gap-1.5 p-4 rounded-xl",
+                hasError ? "bg-destructive/10 border border-destructive/30" : null,
+            )}
+            onLongPress={handleLongPress}
+            onTouchStart={handleTouchStart}
+        >
+            {agentName ? <AgentBadge name={agentName} /> : null}
+            {errorMessage ? (
+                <View className="flex-row items-center gap-1.5 mb-1">
+                    <TriangleAlertIcon size={12} color={THEME[theme].destructive ?? "#ef4444"} />
+                    <View className="flex-1">
+                        <Text className="text-xs font-medium text-destructive">
+                            {getErrorLabel(errorMessage.error?.name)}
+                        </Text>
+                        {getErrorHint(errorMessage.error?.name) && (
+                            <Text className="text-xs text-destructive/70 mt-0.5">
+                                {getErrorHint(errorMessage.error?.name)}
+                            </Text>
+                        )}
+                    </View>
+                </View>
+            ) : null}
+            {messages.map((innerMessage, mi) =>
+                (innerMessage.parts ?? []).map((part, j) => {
+                    if (part.type === "reasoning") {
+                        const isPartStreaming = !!streaming && mi === messages.length - 1 && j === (lastPartsLength - 1)
+                        const partTime = (part as { time?: { start: number; end?: number } }).time
+                        return (
+                            <ReasoningBlock
+                                key={`${innerMessage.id}:${part.id ?? j}`}
+                                text={(part as { text?: string }).text ?? ""}
+                                streaming={isPartStreaming}
+                                startedAt={partTime?.start ?? innerMessage.time.created}
+                                endedAt={partTime?.end}
+                                theme={theme}
+                            />
+                        )
+                    }
+                    const isLastPartOverall = mi === messages.length - 1 && j === (lastPartsLength - 1)
+                    return <MemoPartRenderer key={`${innerMessage.id}:${part.id ?? j}`} part={part} index={j} message={innerMessage} theme={theme} projectId={projectId} sessionId={sessionId} pendingQuestions={pendingQuestions} onQuestionReply={onQuestionReply} onQuestionReject={onQuestionReject} pendingPermissions={pendingPermissions} onPermissionReply={onPermissionReply} streaming={streaming && isLastPartOverall} />
+                })
+            )}
+            <ResponseGroupMetadata messages={messages} streaming={streaming} />
+
+            <Modal visible={showMenu} transparent animationType="none" onRequestClose={closeMenu}>
+                <Pressable className="flex-1" onPress={closeMenu}>
+                    <View
+                        className="w-56 rounded-xl bg-card border border-border shadow-lg"
+                        style={{ position: "absolute", top: menuPos.top, left: menuPos.left }}
+                    >
+                        <View className="py-2">
+                            <Pressable
+                                className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
+                                onPress={handleRevert}
+                            >
+                                <RotateCcwIcon size={16} color={THEME[theme].mutedForeground} />
+                                <Text className="text-sm text-foreground">Revert</Text>
+                            </Pressable>
+
+                            <Pressable
+                                className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
+                                onPress={handleCopyFull}
+                            >
+                                <CopyIcon size={16} color={THEME[theme].mutedForeground} />
+                                <Text className="text-sm text-foreground">Copy full message</Text>
+                            </Pressable>
+
+                            <Pressable
+                                className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
+                                onPress={handleSelectiveCopy}
+                            >
+                                <PenLineIcon size={16} color={THEME[theme].mutedForeground} />
+                                <Text className="text-sm text-foreground">Selective Copy</Text>
+                            </Pressable>
+
+                            <Pressable
+                                className="flex-row items-center gap-3 px-4 py-2.5 active:bg-accent/50"
+                                onPress={handleFork}
+                            >
+                                <GitBranchIcon size={16} color={THEME[theme].mutedForeground} />
+                                <Text className="text-sm text-foreground">Fork</Text>
+                            </Pressable>
+                        </View>
+                    </View>
+                </Pressable>
+            </Modal>
+        </Pressable>
+    )
+}
+
+export const AssistantResponseGroup = memo(AssistantResponseGroupInner, (prev, next) => {
+    if (prev.theme !== next.theme || prev.projectId !== next.projectId || prev.sessionId !== next.sessionId || prev.streaming !== next.streaming) return false
+    if (prev.pendingQuestions !== next.pendingQuestions || prev.pendingPermissions !== next.pendingPermissions) return false
+    if (prev.messages.length !== next.messages.length) return false
+    for (let i = 0; i < prev.messages.length; i++) {
+        if (prev.messages[i] !== next.messages[i]) return false
+    }
+    return true
+})
 
 function MessageItemInner({ message, theme, projectId, sessionId, pendingQuestions, onQuestionReply, onQuestionReject, pendingPermissions, onPermissionReply, streaming, queued }: MessageItemProps & { streaming?: boolean }) {
     const router = useRouter()
