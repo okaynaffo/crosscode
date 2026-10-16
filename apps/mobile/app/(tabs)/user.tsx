@@ -1,4 +1,4 @@
-import { View, ScrollView, Switch, AppState, Linking, Alert } from "react-native"
+import { View, ScrollView, Switch, Linking, Alert } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { Text } from "@/components/ui/text"
 import { Button } from "@/components/ui/button"
@@ -21,7 +21,6 @@ import { THEME } from "@/lib/theme"
 import { useColorScheme } from "nativewind"
 import Constants from "expo-constants"
 import { useSettings } from "@/store/settings.store"
-import { useConnections } from "@/store/connection.store"
 import { useAuth } from "@/store/auth.store"
 import { getAccountNotificationSettings, registerPushDevice, updateAccountNotificationSettings } from "@/lib/account-notifications"
 import { createBillingPortal } from "@/lib/billing"
@@ -65,8 +64,6 @@ export default function UserPage() {
   const logout = useAuth((s) => s.logout)
   const isLoggedIn = useAuth((s) => s.isLoggedIn)
 
-  const clearLastRemoteUrlOnClose = useSettings((s) => s.clearLastRemoteUrlOnClose)
-  const setClearLastRemoteUrlOnClose = useSettings((s) => s.setClearLastRemoteUrlOnClose)
   const notifications = useSettings((s) => s.notifications)
   const setNotifications = useSettings((s) => s.setNotifications)
   const emailForUpdates = useSettings((s) => s.emailForUpdates)
@@ -74,20 +71,6 @@ export default function UserPage() {
   const allowTerminal = useSettings((s) => s.allowTerminal)
   const setAllowTerminal = useSettings((s) => s.setAllowTerminal)
   const resetOnboarding = useSettings((s) => s.resetOnboarding)
-
-  const setCurrent = useConnections((s) => s.setCurrent)
-
-  React.useEffect(() => {
-    if (!clearLastRemoteUrlOnClose) return
-
-    const subscription = AppState.addEventListener("change", (nextAppState) => {
-      if (nextAppState === "background" || nextAppState === "inactive") {
-        setCurrent("" as never)
-      }
-    })
-
-    return () => subscription.remove()
-  }, [clearLastRemoteUrlOnClose, setCurrent])
 
   React.useEffect(() => {
     if (!serverUrl || !sessionToken) return

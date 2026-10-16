@@ -8,7 +8,6 @@ import { Dialog, DialogHeader, DialogFooter } from "@/components/ui/dialog"
 import { useFocusEffect, useRouter } from "expo-router"
 import { useConnections } from "@/store/connection.store"
 import { useProjects } from "@/store/projects.store"
-import { useAllowsMultipleConnections } from "@/lib/entitlement"
 import { useAuth } from "@/store/auth.store"
 import { usePaywall } from "@/store/paywall.store"
 import { isAtTunnelLimit, requestPaywall } from "@/lib/paywall"
@@ -34,13 +33,20 @@ import { THEME } from "@/lib/theme"
 import { useColorScheme } from "nativewind"
 import { Input } from "@/components/ui/input"
 
-type FilterType = "all" | "active" | "inactive"
+type FilterType = "all" | "connected" | "unreachable"
 type SortType = "name" | "recent" | "status"
+type ConnectionStatus = "connected" | "checking" | "unreachable"
+
+function getConnectionStatus(healthy?: boolean | null): ConnectionStatus {
+  if (healthy === false) return "unreachable"
+  if (healthy == null) return "checking"
+  return "connected"
+}
 
 const FILTER_OPTIONS: { key: FilterType; label: string }[] = [
     { key: "all", label: "All" },
-    { key: "active", label: "Active" },
-    { key: "inactive", label: "Inactive" },
+    { key: "connected", label: "Connected" },
+    { key: "unreachable", label: "Unreachable" },
 ]
 
 const SORT_OPTIONS: { key: SortType; label: string }[] = [
@@ -51,17 +57,13 @@ const SORT_OPTIONS: { key: SortType; label: string }[] = [
 
 const ConnectionItem = React.memo(function ConnectionItem({
   connection,
-  isActive,
   project,
-  allowMultiple,
   onNavigate,
   onRename,
   onDelete,
 }: {
   connection: { id: string; name: string; url: string; healthy?: boolean | null }
-  isActive: boolean
   project?: { directory: string }
-  allowMultiple: boolean
   onNavigate: (id: string) => void
   onRename: (id: string) => void
   onDelete: (id: string) => void
@@ -69,8 +71,9 @@ const ConnectionItem = React.memo(function ConnectionItem({
   const theme = useColorScheme().colorScheme ?? "light"
   const [menuVisible, setMenuVisible] = React.useState(false)
   const pressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isUnreachable = connection.healthy === false
-  const isSelectable = allowMultiple && !isActive
+  const status = getConnectionStatus(connection.healthy)
+  const isUnreachable = status === "unreachable"
+  const isChecking = status === "checking"
 
   React.useEffect(() => {
     return () => {
@@ -94,10 +97,10 @@ const ConnectionItem = React.memo(function ConnectionItem({
   }, [])
 
   const handlePress = React.useCallback(() => {
-    if (!menuVisible && (!isUnreachable || isSelectable)) {
+    if (!menuVisible) {
       onNavigate(connection.id)
     }
-  }, [menuVisible, isUnreachable, isSelectable, onNavigate, connection.id])
+  }, [menuVisible, onNavigate, connection.id])
 
   const handleRenamePress = React.useCallback(() => {
     setMenuVisible(false)
@@ -114,35 +117,29 @@ const ConnectionItem = React.memo(function ConnectionItem({
       <Pressable
         onPressIn={handlePressIn}
         onPressOut={handlePressOut}
-        onPress={(isActive && !isUnreachable) || isSelectable ? handlePress : undefined}
+        onPress={handlePress}
         className={cn(
           "flex-row items-center gap-3 rounded-xl p-4",
-          isActive
-            ? "bg-muted/50 border border-border active:bg-muted/70"
-            : isSelectable
-              ? "bg-muted/50 active:bg-muted/70"
-              : "bg-muted/30 active:bg-muted/50"
+          isUnreachable
+            ? "bg-muted/30 active:bg-muted/50"
+            : "bg-muted/50 border border-border active:bg-muted/70"
         )}
-        style={isUnreachable && !isSelectable ? { opacity: 0.5 } : undefined}
+        style={isUnreachable ? { opacity: 0.5 } : undefined}
       >
         <View className={cn(
           "w-10 h-10 rounded-xl items-center justify-center",
-          isUnreachable && !isSelectable
+          isUnreachable
             ? "bg-destructive/15"
-            : isActive
-              ? "bg-green-500/20"
-              : isSelectable
-                ? "bg-primary/10"
-                : "bg-muted"
+            : isChecking
+              ? "bg-muted"
+              : "bg-green-500/20"
         )}>
-          {isUnreachable && !isSelectable ? (
+          {isUnreachable ? (
             <WifiOff size={18} color={THEME[theme].destructive} />
-          ) : isActive ? (
-            <Wifi size={18} color={THEME[theme].foreground} />
-          ) : isSelectable ? (
-            <Wifi size={18} color={THEME[theme].primary} />
+          ) : isChecking ? (
+            <Wifi size={18} color={THEME[theme].mutedForeground} />
           ) : (
-            <WifiOff size={18} color={THEME[theme].mutedForeground} />
+            <Wifi size={18} color={THEME[theme].foreground} />
           )}
         </View>
         <View className="flex-1 gap-0.5">
@@ -156,19 +153,19 @@ const ConnectionItem = React.memo(function ConnectionItem({
             </Text>
           )}
         </View>
-        {isUnreachable && !isSelectable ? (
+        {isUnreachable ? (
           <View className="px-2 py-0.5 rounded-full bg-destructive/10">
             <Text className="text-[10px] font-medium text-destructive">Unreachable</Text>
           </View>
-        ) : isActive ? (
-          <View className="px-2 py-0.5 rounded-full bg-primary/10">
-            <Text className="text-[10px] font-medium text-primary">Active</Text>
+        ) : isChecking ? (
+          <View className="px-2 py-0.5 rounded-full bg-muted">
+            <Text className="text-[10px] font-medium text-muted-foreground">Checking…</Text>
           </View>
-        ) : isSelectable ? (
-          <View className="px-2 py-0.5 rounded-full bg-primary/10">
-            <Text className="text-[10px] font-medium text-primary">Available</Text>
+        ) : (
+          <View className="px-2 py-0.5 rounded-full bg-green-500/15">
+            <Text className="text-[10px] font-medium text-green-500">Connected</Text>
           </View>
-        ) : null}
+        )}
       </Pressable>
 
       <Modal visible={menuVisible} transparent animationType="fade" onRequestClose={handleCloseMenu}>
@@ -178,15 +175,13 @@ const ConnectionItem = React.memo(function ConnectionItem({
             <View className="w-10 h-1 rounded-full bg-muted mx-auto my-3" />
 
             <View className="flex-row items-start gap-4 mb-6">
-              <View className={cn("w-12 h-12 rounded-xl items-center justify-center shrink-0", isUnreachable && !isSelectable ? "bg-destructive/15" : isActive ? "bg-green-500/20" : isSelectable ? "bg-primary/10" : "bg-muted")}>
-                {isUnreachable && !isSelectable ? (
+              <View className={cn("w-12 h-12 rounded-xl items-center justify-center shrink-0", isUnreachable ? "bg-destructive/15" : isChecking ? "bg-muted" : "bg-green-500/20")}>
+                {isUnreachable ? (
                   <WifiOff size={20} color={THEME[theme].destructive} />
-                ) : isActive ? (
-                  <Wifi size={20} color={THEME[theme].foreground} />
-                ) : isSelectable ? (
-                  <Wifi size={20} color={THEME[theme].primary} />
+                ) : isChecking ? (
+                  <Wifi size={20} color={THEME[theme].mutedForeground} />
                 ) : (
-                  <WifiOff size={20} color={THEME[theme].mutedForeground} />
+                  <Wifi size={20} color={THEME[theme].foreground} />
                 )}
               </View>
               <View className="flex-1 gap-1">
@@ -201,19 +196,19 @@ const ConnectionItem = React.memo(function ConnectionItem({
                     {formatDirectory(project.directory)}
                   </Text>
                 )}
-                {isUnreachable && !isSelectable ? (
+                {isUnreachable ? (
                   <View className="mt-1 self-start px-2 py-0.5 rounded-full bg-destructive/10">
                     <Text className="text-[10px] font-medium text-destructive">Unreachable</Text>
                   </View>
-                ) : isActive ? (
-                  <View className="mt-1 self-start px-2 py-0.5 rounded-full bg-primary/10">
-                    <Text className="text-[10px] font-medium text-primary">Active</Text>
+                ) : isChecking ? (
+                  <View className="mt-1 self-start px-2 py-0.5 rounded-full bg-muted">
+                    <Text className="text-[10px] font-medium text-muted-foreground">Checking…</Text>
                   </View>
-                ) : isSelectable ? (
-                  <View className="mt-1 self-start px-2 py-0.5 rounded-full bg-primary/10">
-                    <Text className="text-[10px] font-medium text-primary">Available</Text>
+                ) : (
+                  <View className="mt-1 self-start px-2 py-0.5 rounded-full bg-green-500/15">
+                    <Text className="text-[10px] font-medium text-green-500">Connected</Text>
                   </View>
-                ) : null}
+                )}
               </View>
             </View>
 
@@ -250,12 +245,11 @@ export default function HomeScreen() {
   const router = useRouter()
   const { colorScheme } = useColorScheme()
   const connections = useConnections((s) => s.connections)
-  const current = useConnections((s) => s.current)
   const setCurrent = useConnections((s) => s.setCurrent)
   const setConnectionHealth = useConnections((s) => s.setConnectionHealth)
-  const allowMultiple = useAllowsMultipleConnections()
   const tier = useAuth((s) => s.user?.tier ?? "free")
   const atLimit = isAtTunnelLimit(tier, connections.length)
+  const canAddMore = !atLimit
 
   const handleAddConnection = React.useCallback(() => {
     if (atLimit) {
@@ -270,7 +264,6 @@ export default function HomeScreen() {
   const updateConnection = useConnections((s) => s.updateConnection)
 
   const theme = colorScheme ?? "light"
-  const currentConnection = React.useMemo(() => connections.find((c) => c.id === current) ?? null, [connections, current])
 
   const [refreshing, setRefreshing] = React.useState(false)
   const [searchQuery, setSearchQuery] = React.useState("")
@@ -299,17 +292,24 @@ export default function HomeScreen() {
     }))
   }, [connections.length, setConnectionHealth])
 
+  const refreshProjects = React.useCallback(async (list: typeof connections) => {
+    await Promise.all(list.map(async (conn) => {
+      if (!conn.url || !conn.token) return
+      try {
+        const project = await getCurrentProject(conn.url, conn.token)
+        if (project) {
+          setProjectForConnection(conn.id, project)
+        }
+      } catch {}
+    }))
+  }, [setProjectForConnection])
+
   const handleRefresh = React.useCallback(async () => {
     setRefreshing(true)
     await checkHealth(true)
-    if (currentConnection?.url && currentConnection?.token) {
-      const project = await getCurrentProject(currentConnection.url, currentConnection.token)
-      if (project) {
-        setProjectForConnection(currentConnection.id, project)
-      }
-    }
+    await refreshProjects(useConnections.getState().connections)
     setRefreshing(false)
-  }, [checkHealth, currentConnection?.id, currentConnection?.url, currentConnection?.token, setProjectForConnection])
+  }, [checkHealth, refreshProjects])
 
   useFocusEffect(
     React.useCallback(() => {
@@ -318,14 +318,9 @@ export default function HomeScreen() {
   )
 
   React.useEffect(() => {
-    if (!currentConnection?.url || !currentConnection?.token) return
-
-    getCurrentProject(currentConnection.url, currentConnection.token).then((project) => {
-      if (project) {
-        setProjectForConnection(currentConnection.id, project)
-      }
-    })
-  }, [currentConnection?.id, currentConnection?.url, currentConnection?.token, setProjectForConnection])
+    if (connections.length === 0) return
+    refreshProjects(connections)
+  }, [connections.length, refreshProjects])
 
   const filteredConnections = React.useMemo(() => {
     let result = [...connections]
@@ -337,10 +332,10 @@ export default function HomeScreen() {
       )
     }
 
-    if (filter === "active") {
-      result = result.filter((c) => c.id === current)
-    } else if (filter === "inactive") {
-      result = result.filter((c) => c.id !== current)
+    if (filter === "connected") {
+      result = result.filter((c) => c.healthy !== false)
+    } else if (filter === "unreachable") {
+      result = result.filter((c) => c.healthy === false)
     }
 
     if (sortBy === "name") {
@@ -348,15 +343,13 @@ export default function HomeScreen() {
     } else if (sortBy === "recent") {
       result.sort((a, b) => b.added - a.added)
     } else if (sortBy === "status") {
-      result.sort((a, b) => {
-        if (a.id === current && b.id !== current) return -1
-        if (a.id !== current && b.id === current) return 1
-        return 0
-      })
+      const rank = (c: { healthy?: boolean | null }) =>
+        c.healthy === false ? 2 : c.healthy == null ? 1 : 0
+      result.sort((a, b) => rank(a) - rank(b))
     }
 
     return result
-  }, [connections, searchQuery, filter, sortBy, current])
+  }, [connections, searchQuery, filter, sortBy])
 
   const projectByConnectionId = React.useMemo(() => {
     const map = new Map<string, { directory: string }>()
@@ -393,8 +386,10 @@ export default function HomeScreen() {
   }, [])
 
   const handleNavigate = React.useCallback((id: string) => {
+    // Keep `current` as a legacy fallback for not-yet-migrated screens,
+    // but navigation itself is param-based so any connection is usable.
     setCurrent(id)
-    router.push("/sessions")
+    router.push({ pathname: "/sessions", params: { connectionId: id } })
   }, [router, setCurrent])
 
   const handleDeleteConfirm = React.useCallback(() => {
@@ -559,25 +554,33 @@ export default function HomeScreen() {
                   : "Add a remote OpenCode connection to get started"}
               </Text>
             </View>
-            <Button
-              size="sm"
-              onPress={handleAddConnection}
-              className="mt-2 rounded-full"
-            >
-              <Plus size={16} color={THEME[theme].primaryForeground} />
-              <Text className="text-sm font-medium text-primary-foreground">New Connection</Text>
-            </Button>
+            {canAddMore ? (
+              <Button
+                size="sm"
+                onPress={handleAddConnection}
+                className="mt-2 rounded-full"
+              >
+                <Plus size={16} color={THEME[theme].primaryForeground} />
+                <Text className="text-sm font-medium text-primary-foreground">New Connection</Text>
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onPress={() => usePaywall.getState().show("usage_nudge")}
+                className="mt-2 rounded-full"
+              >
+                <Zap size={16} color={THEME[theme].primaryForeground} />
+                <Text className="text-sm font-medium text-primary-foreground">Upgrade for more</Text>
+              </Button>
+            )}
           </View>
         }
         renderItem={({ item: c }) => {
-          const isActive = c.id === current
           const project = projectByConnectionId.get(c.id)
           return (
             <ConnectionItem
               connection={c}
-              isActive={isActive}
               project={project}
-              allowMultiple={allowMultiple}
               onNavigate={handleNavigate}
               onRename={handleRename}
               onDelete={handleDelete}
@@ -590,7 +593,7 @@ export default function HomeScreen() {
         initialNumToRender={15}
       />
 
-      {filteredConnections.length > 0 && (
+      {filteredConnections.length > 0 && canAddMore && (
         <View className="absolute" style={{ bottom: insets.bottom + 24, right: 24 }}>
           <Pressable
             onPress={handleAddConnection}

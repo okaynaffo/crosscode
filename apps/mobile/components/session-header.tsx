@@ -13,7 +13,7 @@ import { Button } from "@/components/ui/button"
 import { Text } from "@/components/ui/text"
 import { THEME } from "@/lib/theme"
 import { shareSession } from "@/lib/sessions"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { useSessions } from "@/store/sessions.store"
 import { useSettings } from "@/store/settings.store"
 import { ShareSessionModal } from "@/components/share-session-modal"
@@ -45,9 +45,7 @@ function SessionHeaderInner({
     const [showShareModal, setShowShareModal] = useState(false)
     const [shareUrl, setShareUrl] = useState<string | null>(null)
     const [shareLoading, setShareLoading] = useState(false)
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { project, connection } = useProjectConnection(projectId)
     const upsertSession = useSessions((s) => s.upsertSession)
     const allowTerminal = useSettings((s) => s.allowTerminal)
 
@@ -83,7 +81,7 @@ function SessionHeaderInner({
             className="flex flex-row gap-2 items-center border-b border-accent pb-2 px-4"
             style={{ paddingTop: paddingTop + 10 }}
         >
-            <Button variant="ghost" className="w-10 h-10 text-white" onPress={() => router.push("/sessions")}>
+            <Button variant="ghost" className="w-10 h-10 text-white" onPress={() => router.push(project ? { pathname: "/sessions", params: { connectionId: project.connectionId } } : "/sessions")}>
                 <ArrowLeftIcon size={20} color={THEME[theme].foreground} />
             </Button>
 

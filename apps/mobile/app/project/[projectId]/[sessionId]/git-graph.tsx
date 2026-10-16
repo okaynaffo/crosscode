@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react"
 import { FlatList, RefreshControl, View } from "react-native"
 import * as Clipboard from "expo-clipboard"
-import { useRouter } from "expo-router"
+import { useLocalSearchParams, useRouter } from "expo-router"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 import { useColorScheme } from "nativewind"
 import ArrowLeftIcon from "lucide-react-native/dist/esm/icons/arrow-left"
@@ -13,7 +13,7 @@ import { THEME } from "@/lib/theme"
 import { computeGitGraph } from "@/lib/git-graph"
 import { GitGraphRow, GIT_ROW_HEIGHT } from "@/components/git-graph-row"
 import { useGitStore } from "@/store/git.store"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { useSettings } from "@/store/settings.store"
 
 const LANE_WIDTH = 13
@@ -25,9 +25,8 @@ export default function GitGraphPage() {
     const theme = colorScheme ?? "light"
     const isDark = theme === "dark"
 
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { projectId } = useLocalSearchParams<{ projectId: string }>()
+    const { connection } = useProjectConnection(projectId)
 
     const commits = useGitStore((s) => s.commits)
     const status = useGitStore((s) => s.status)

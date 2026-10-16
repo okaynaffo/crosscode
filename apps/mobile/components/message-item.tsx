@@ -24,7 +24,7 @@ import { AgentBadge } from "@/components/agent-badge"
 import { QuestionRequest } from "@/store/questions.store"
 import { PermissionRequest } from "@/store/permissions.store"
 import { revertMessage, forkSession } from "@/lib/sessions"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { useSessions } from "@/store/sessions.store"
 import { useModels } from "@/store/models.store"
 import { useSelectiveCopy } from "@/store/selective-copy.store"
@@ -453,9 +453,7 @@ function MessageItemInner({ message, theme, projectId, sessionId, pendingQuestio
     const containerRef = useRef<View>(null)
     const touchPosRef = useRef({ x: 0, y: 0 })
 
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
     const upsertSession = useSessions((s) => s.upsertSession)
 
     const hasError = message.role === "assistant" && "error" in message && message.error

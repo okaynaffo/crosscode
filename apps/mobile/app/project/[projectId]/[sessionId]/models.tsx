@@ -21,7 +21,7 @@ import { Icon } from "@/components/ui/icon"
 import { THEME } from "@/lib/theme"
 import { cn } from "@/lib/utils"
 import { useModels } from "@/store/models.store"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { useChatStore } from "@/store/chat.store"
 import { updateSessionModel } from "@/lib/models"
 
@@ -61,9 +61,7 @@ export default function ModelsPage() {
         currentProviderId?: string
         agent?: string
     }>()
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
     const models = useModels((s) => s.models)
     const providers = useModels((s) => s.providers)
     const fetchAll = useModels((s) => s.fetchAll)
