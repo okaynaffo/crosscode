@@ -14,7 +14,7 @@ import { useDiffStore } from "@/store/diff.store"
 import { fetchSessionDiffs, FileDiff } from "@/lib/diff"
 import { getMessages } from "@/lib/messages"
 import { Message, Part } from "@/store/messages.store"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 
 function toFileDiff(value: unknown): FileDiff | null {
     if (!value || typeof value !== "object") return null
@@ -38,9 +38,7 @@ export default function FilesPage() {
     const theme = (colorScheme ?? "light") as "light" | "dark"
     const { projectId, sessionId } = useLocalSearchParams<{ projectId: string; sessionId: string }>()
     const setDiff = useDiffStore((s) => s.setDiff)
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
 
     const [files, setFiles] = useState<FileDiff[]>([])
     const [loading, setLoading] = useState(true)

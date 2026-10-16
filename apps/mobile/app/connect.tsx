@@ -88,7 +88,7 @@ export default function Connect() {
             void requestPaywall("connection_limit")
             return
         }
-        addConnection({
+        const id = addConnection({
             url,
             name,
             token,
@@ -96,7 +96,7 @@ export default function Connect() {
         })
         cacheServerVersion(url, serverVersion ?? 1)
         consumePendingConnection()
-        router.replace("/")
+        router.replace({ pathname: "/sessions", params: { connectionId: id } })
     }
 
     useEffect(() => {

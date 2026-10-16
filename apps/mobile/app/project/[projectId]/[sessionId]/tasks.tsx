@@ -12,7 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Text } from "@/components/ui/text"
 import { THEME } from "@/lib/theme"
 import { cn } from "@/lib/utils"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { fetchSessionTodos, TodoTask } from "@/lib/todo"
 
 const STATUS_CONFIG: Record<string, { icon: typeof CheckCircle2Icon; color: string; bg: string; label: string }> = {
@@ -34,9 +34,7 @@ export default function TasksPage() {
     const { colorScheme } = useColorScheme()
     const theme = (colorScheme ?? "light") as "light" | "dark"
     const { projectId, sessionId } = useLocalSearchParams<{ projectId: string; sessionId: string }>()
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
 
     const [todos, setTodos] = useState<TodoTask[]>([])
     const [loading, setLoading] = useState(true)

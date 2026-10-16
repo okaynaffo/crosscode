@@ -133,8 +133,8 @@ function SessionScreenInner({ projectId, sessionId }: { projectId: string; sessi
 
     const theme = (colorScheme ?? "light") as "light" | "dark"
 
-    const connection = useMemo(() => connections.find((c) => c.id === current) ?? null, [connections, current])
     const project = useMemo(() => projects.find((p) => p.id === projectId) ?? null, [projects, projectId])
+    const connection = useMemo(() => connections.find((c) => c.id === (project?.connectionId ?? current)) ?? null, [connections, current, project?.connectionId])
     const session = useMemo(() => sessions.find((s) => s.id === sessionId) ?? null, [sessions, sessionId])
 
     const isStreamingSelector = useMemo(
