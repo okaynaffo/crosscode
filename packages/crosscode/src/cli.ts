@@ -4,8 +4,9 @@ import { readFile } from "fs/promises"
 import chalk from "chalk"
 import qrcode from "qrcode-terminal"
 import { encodeQrPayload } from "@crosscode/shared"
-import { debug, checkDep, setLogWriter, getFreePort, terminateChild } from "./util"
+import { debug, checkDep, setLogWriter, getFreePort, terminateChild, openBrowser } from "./util"
 import { logCrosscode, closeAllLogs, crosscodeLogFile, cloudflaredLogFile, opencodeLogFile } from "./log"
+import { startConnectionServer, closeConnectionServer, connectionPageUrl, setConnectionInfo } from "./connection-page"
 import { readConfig, saveConfig, getProjectConfig, ensureSessionToken, resolveOpencodeBin } from "./config"
 import { initSentry, captureCliError } from "./sentry"
 import * as Sentry from "@sentry/node"
@@ -18,17 +19,36 @@ import { startNgrokProvider } from "./providers/ngrok"
 
 const children: import("child_process").ChildProcess[] = []
 let isShuttingDown = false
+let browserOpened = false
 
 setLogWriter(logCrosscode)
 
 function printTunnelQr(url: string, token: string, opencodePort: number, requestedPort: number) {
     const payload = encodeQrPayload({ url, token, v: 1 })
+    // Keep the page in sync across reconnects and provider fallbacks. The
+    // connection page server itself is stable, so only open the browser once.
+    setConnectionInfo({ url, token, ready: true })
     if (opencodePort !== requestedPort) {
         console.log(chalk.yellow(`opencode running on port ${opencodePort}`))
     }
+
+    const pageUrl = connectionPageUrl()
+    const noOpen = process.argv.slice(2).includes("--no-open") || process.env.CROSSCODE_NO_OPEN === "1"
+    const openedNow = !browserOpened && !!pageUrl && !!process.stdout.isTTY && !noOpen && openBrowser(pageUrl)
+    if (openedNow) browserOpened = true
+
     console.log(chalk.cyanBright("\n Scan with CrossCode App:"))
-    qrcode.generate(payload, { small: true })
-    console.log(chalk.grey(`URL: ${url}`))
+    if (browserOpened) {
+        console.log(chalk.green(`   Browser opened: ${pageUrl}`))
+        console.log(chalk.dim("   Scan the QR, or copy the URL/token from that page."))
+    } else {
+        if (pageUrl) console.log(chalk.grey(`   Open in your browser: ${pageUrl}`))
+        console.log(chalk.grey(`   URL: ${url}`))
+        console.log()
+        // Fallback when we couldn't open a browser (headless, --no-open, SSH, Docker).
+        qrcode.generate(payload, { small: true })
+    }
+    console.log(chalk.yellow.bold("   Don't close this terminal — closing it disconnects the app."))
     console.log(chalk.dim.bold("[Press 'l' for logs  •  'h' for help  •  Ctrl+C to exit]"))
 }
 
@@ -105,6 +125,7 @@ ${chalk.yellow.bold("COMMANDS:")}
 ${chalk.yellow.bold("OPTIONS:")}
   ${chalk.green("--cloudflared")}      Use Cloudflare tunnel (default for free tier)
   ${chalk.green("--ngrok")}            Use ngrok tunnel (requires auth token)
+  ${chalk.green("--no-open")}          Don't auto-open the connection page in a browser
   ${chalk.green("--help, -h")}         Show this help message
 
 ${chalk.yellow.bold("EXAMPLES:")}
@@ -174,6 +195,13 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
     if (missingDep) process.exit(1)
 
     logCrosscode("All dependencies found")
+
+    try {
+        const connectionPort = await startConnectionServer()
+        logCrosscode(`Connection page server started on http://127.0.0.1:${connectionPort}/`)
+    } catch (err) {
+        debug("connection page server failed to start", { error: err instanceof Error ? err.message : String(err) })
+    }
 
     if (config.auth?.sessionToken) {
         console.log(chalk.green(`\n Logged in as ${config.auth.email}`))
@@ -258,6 +286,7 @@ ${chalk.dim("Documentation: https://github.com/snhsish/crosscode")}
         debug("shutdown initiated", { source: source || "unknown" })
         await Promise.all(children.map(terminateChild))
         cleanupKeypress()
+        closeConnectionServer()
         proxyAgent.destroy()
         await closeAllLogs()
         process.exit(0)
@@ -296,6 +325,7 @@ async function handleFatalError(err: unknown) {
         captureCliError(err)
         await Sentry.flush(2000)
     } catch {}
+    closeConnectionServer()
     proxyAgent.destroy()
     await closeAllLogs()
     process.exit(1)
