@@ -340,9 +340,6 @@ importers:
 
   packages/crosscode:
     dependencies:
-      '@crosscode/shared':
-        specifier: workspace:^
-        version: link:../shared
       '@sentry/node':
         specifier: ^10
         version: 10.75.0(@opentelemetry/core@2.11.0(@opentelemetry/api@1.9.1))
@@ -362,6 +359,9 @@ importers:
         specifier: ^8.18.0
         version: 8.21.0
     devDependencies:
+      '@crosscode/shared':
+        specifier: workspace:^
+        version: link:../shared
       '@types/cross-spawn':
         specifier: ^6.0.6
         version: 6.0.6
