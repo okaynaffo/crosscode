@@ -9,7 +9,7 @@ import {
 import { Manrope_600SemiBold } from "@expo-google-fonts/manrope/600SemiBold"
 import { Manrope_700Bold } from "@expo-google-fonts/manrope/700Bold"
 import { useFonts } from "@expo-google-fonts/manrope/useFonts"
-import { Stack, useRouter, useSegments } from "expo-router"
+import { Stack, usePathname, useRouter, useSegments } from "expo-router"
 import { StatusBar } from "expo-status-bar"
 import { useColorScheme } from "nativewind"
 import * as React from "react"
@@ -19,6 +19,7 @@ import * as SplashScreen from "expo-splash-screen"
 import * as Updates from "expo-updates"
 
 import { NAV_THEME } from "@/lib/theme"
+import { installDebugLogging, log } from "@/lib/debug-logger"
 import { useNotificationRouting } from "@/lib/notifications"
 import { registerCrossCodeWidgets, refreshWidgets } from "@/lib/widget-task"
 import { PaywallHost } from "@/components/PaywallHost"
@@ -30,11 +31,14 @@ import { useQuestions } from "@/store/questions.store"
 
 SplashScreen.preventAutoHideAsync()
 
+installDebugLogging()
+
 registerCrossCodeWidgets()
 
 export default function RootLayout() {
   const router = useRouter()
   const segments = useSegments()
+  const pathname = usePathname()
   const { colorScheme } = useColorScheme()
   const theme = colorScheme ?? "dark"
   const [fontsLoaded] = useFonts({
@@ -46,6 +50,14 @@ export default function RootLayout() {
   const [settingsHydrated, setSettingsHydrated] = React.useState(useSettings.persist.hasHydrated())
   const { isUpdatePending } = Updates.useUpdates()
   useNotificationRouting()
+
+  React.useEffect(() => {
+    log("Router", `-> ${pathname || "/"}`, "debug")
+  }, [pathname])
+
+  React.useEffect(() => {
+    if (fontsLoaded) log("app", "Finished loading third party imports", "info")
+  }, [fontsLoaded])
 
   React.useEffect(() => {
     if (isUpdatePending) {

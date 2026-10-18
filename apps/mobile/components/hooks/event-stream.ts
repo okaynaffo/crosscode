@@ -5,6 +5,7 @@ import { usePermissions } from "@/store/permissions.store"
 import { useOpencodeStats } from "@/store/opencode-stats.store"
 import { useProjects } from "@/store/projects.store"
 import { getAuthHeader } from "@/lib/utils"
+import { log } from "@/lib/debug-logger"
 import { notifyAgentStatus } from "@/lib/notifications"
 import { normalizePermission } from "@/lib/permissions"
 
@@ -66,9 +67,13 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
 
         function scheduleReconnect() {
             if (abort.signal.aborted) return
-            if (reconnectAttempts >= maxReconnectAttempts) return
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                log("SSE", "global stream reconnect limit reached", "error")
+                return
+            }
             reconnectAttempts++
             const delay = reconnectDelays[Math.min(reconnectAttempts - 1, reconnectDelays.length - 1)]
+            log("SSE", `global stream reconnecting #${reconnectAttempts} in ${delay}ms`, "warn")
             reconnectTimer = setTimeout(() => {
                 if (!abort.signal.aborted) connect()
             }, delay)
@@ -76,6 +81,7 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
 
         async function connect() {
             try {
+                log("SSE", "global stream connecting", "debug")
                 const response = await fetch(eventUrl, {
                     method: "POST",
                     headers: {
@@ -87,15 +93,18 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
                     body: JSON.stringify({}),
                 })
                 if (!response.ok) {
+                    log("SSE", `global stream failed: HTTP ${response.status}`, "warn")
                     scheduleReconnect()
                     return
                 }
                 const reader = response.body?.getReader()
                 if (!reader) {
+                    log("SSE", "global stream failed: no response body", "warn")
                     scheduleReconnect()
                     return
                 }
                 reconnectAttempts = 0
+                log("SSE", "global stream connected", "info")
                 const decoder = new TextDecoder()
                 while (true) {
                     const { done, value } = await reader.read()
@@ -124,7 +133,10 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
                 }
                 scheduleReconnect()
             } catch (err) {
-                if ((err as Error).name !== "AbortError") scheduleReconnect()
+                if ((err as Error).name !== "AbortError") {
+                    log("SSE", `global stream error: ${(err as Error).message}`, "error")
+                    scheduleReconnect()
+                }
             }
         }
 
@@ -134,6 +146,7 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
             if (reconnectTimer) clearTimeout(reconnectTimer)
             abort.abort()
             abortRef.current = null
+            log("SSE", "global stream closed", "debug")
         }
     }, [url, token])
 }
@@ -623,6 +636,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
             if (abort.signal.aborted) return
             if (reconnectAttempts >= maxReconnectAttempts) {
                 setConnectionStatus("error")
+                log("SSE", `session ${sid} reconnect limit reached`, "error")
                 return
             }
 
@@ -635,6 +649,8 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                 setConnectionStatus("connectivity-issues")
             }
 
+            log("SSE", `session ${sid} reconnecting #${reconnectAttempts} in ${delay}ms`, "warn")
+
             reconnectTimer = setTimeout(() => {
                 if (!abort.signal.aborted) {
                     connect()
@@ -644,6 +660,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
 
         async function connect() {
             try {
+                log("SSE", `session ${sid} connecting`, "debug")
                 const response = await fetch(eventUrl, {
                     method: "POST",
                     headers: {
@@ -657,6 +674,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
 
                 if (!response.ok) {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} failed: HTTP ${response.status}`, "warn")
                     scheduleReconnect()
                     return
                 }
@@ -664,6 +682,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                 const reader = response.body?.getReader()
                 if (!reader) {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} failed: no response body`, "warn")
                     scheduleReconnect()
                     return
                 }
@@ -679,6 +698,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     if (!connected) {
                         connected = true
                         setConnectionStatus("connected")
+                        log("SSE", `session ${sid} connected`, "info")
                     }
 
                     buffer += decoder.decode(value, { stream: true })
@@ -727,6 +747,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     // Expected on cleanup
                 } else {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} error: ${(err as Error).message}`, "error")
                     scheduleReconnect()
                 }
             }
@@ -744,6 +765,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
             setConnectionStatus("disconnected")
             setStreaming(sid, false)
             setActiveMessageId(sid, null)
+            log("SSE", `session ${sid} closed`, "debug")
         }
     }, [sessionId, url, token, projectId])
 }

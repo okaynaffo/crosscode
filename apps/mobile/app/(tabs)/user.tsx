@@ -6,6 +6,7 @@ import ArrowLeft from "lucide-react-native/dist/esm/icons/arrow-left"
 import Bell from "lucide-react-native/dist/esm/icons/bell"
 import CreditCard from "lucide-react-native/dist/esm/icons/credit-card"
 import ExternalLink from "lucide-react-native/dist/esm/icons/external-link"
+import FileText from "lucide-react-native/dist/esm/icons/file-text"
 import Info from "lucide-react-native/dist/esm/icons/info"
 import LogOut from "lucide-react-native/dist/esm/icons/log-out"
 import Mail from "lucide-react-native/dist/esm/icons/mail"
@@ -355,6 +356,13 @@ export default function UserPage() {
             icon={<Info size={18} color={THEME[theme].primary} />}
             title="Version"
             description={versionDisplay}
+          />
+          <SettingsDivider />
+          <SettingsLinkRow
+            icon={<FileText size={18} color={THEME[theme].primary} />}
+            title="Debug logs"
+            description="View app activity and network requests"
+            onPress={() => router.push("/debug-logs")}
           />
           <SettingsDivider />
           <SettingsLinkRow
