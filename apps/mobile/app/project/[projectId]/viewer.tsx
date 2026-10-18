@@ -11,7 +11,7 @@ import FileQuestionIcon from "lucide-react-native/dist/esm/icons/file-question"
 import { Button } from "@/components/ui/button"
 import { Text } from "@/components/ui/text"
 import { THEME } from "@/lib/theme"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { isBinaryPath, languageFromPath, readFileContent } from "@/lib/file-browser"
 import { CodeBlock } from "@/components/code-block"
 
@@ -26,9 +26,7 @@ export default function ViewerPage() {
     const { projectId, path } = useLocalSearchParams<{ projectId: string; path?: string }>()
     const filePath = typeof path === "string" ? path : ""
 
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
 
     const [content, setContent] = useState<string | null>(null)
     const [truncated, setTruncated] = useState(false)

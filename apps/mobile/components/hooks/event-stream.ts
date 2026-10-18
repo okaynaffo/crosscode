@@ -5,6 +5,7 @@ import { usePermissions } from "@/store/permissions.store"
 import { useOpencodeStats } from "@/store/opencode-stats.store"
 import { useProjects } from "@/store/projects.store"
 import { getAuthHeader } from "@/lib/utils"
+import { log } from "@/lib/debug-logger"
 import { notifyAgentStatus } from "@/lib/notifications"
 import { normalizePermission } from "@/lib/permissions"
 
@@ -16,6 +17,13 @@ type SSEEvent = {
 type MessagePart = Part & {
     sessionID?: string
     messageID?: string
+}
+
+// A file url we can actually render on-device. Anything else (server-local
+// paths, bare filenames) shows as a blank box without this guard.
+const RENDERABLE_FILE_URL = /^(data:|https?:\/\/|file:\/\/|content:\/\/|ph:\/\/|asset:\/\/)/
+function isRenderableFileUrl(url: unknown): boolean {
+    return typeof url === "string" && RENDERABLE_FILE_URL.test(url)
 }
 
 export function useGlobalSessionStatus(url?: string, token?: string) {
@@ -59,9 +67,13 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
 
         function scheduleReconnect() {
             if (abort.signal.aborted) return
-            if (reconnectAttempts >= maxReconnectAttempts) return
+            if (reconnectAttempts >= maxReconnectAttempts) {
+                log("SSE", "global stream reconnect limit reached", "error")
+                return
+            }
             reconnectAttempts++
             const delay = reconnectDelays[Math.min(reconnectAttempts - 1, reconnectDelays.length - 1)]
+            log("SSE", `global stream reconnecting #${reconnectAttempts} in ${delay}ms`, "warn")
             reconnectTimer = setTimeout(() => {
                 if (!abort.signal.aborted) connect()
             }, delay)
@@ -69,6 +81,7 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
 
         async function connect() {
             try {
+                log("SSE", "global stream connecting", "debug")
                 const response = await fetch(eventUrl, {
                     method: "POST",
                     headers: {
@@ -80,15 +93,18 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
                     body: JSON.stringify({}),
                 })
                 if (!response.ok) {
+                    log("SSE", `global stream failed: HTTP ${response.status}`, "warn")
                     scheduleReconnect()
                     return
                 }
                 const reader = response.body?.getReader()
                 if (!reader) {
+                    log("SSE", "global stream failed: no response body", "warn")
                     scheduleReconnect()
                     return
                 }
                 reconnectAttempts = 0
+                log("SSE", "global stream connected", "info")
                 const decoder = new TextDecoder()
                 while (true) {
                     const { done, value } = await reader.read()
@@ -117,7 +133,10 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
                 }
                 scheduleReconnect()
             } catch (err) {
-                if ((err as Error).name !== "AbortError") scheduleReconnect()
+                if ((err as Error).name !== "AbortError") {
+                    log("SSE", `global stream error: ${(err as Error).message}`, "error")
+                    scheduleReconnect()
+                }
             }
         }
 
@@ -127,6 +146,7 @@ export function useGlobalSessionStatus(url?: string, token?: string) {
             if (reconnectTimer) clearTimeout(reconnectTimer)
             abort.abort()
             abortRef.current = null
+            log("SSE", "global stream closed", "debug")
         }
     }, [url, token])
 }
@@ -204,55 +224,58 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     if (!info || info.sessionID !== currentSessionId) return
 
                     const existing = getOrCreatePending()
-                    const existingIdx = existing.findIndex(m => m.id === info.id)
                     const infoParts = ((info as unknown as { parts?: Part[] }).parts ?? []) as Part[]
 
+                    // Salvage device-local file uris BEFORE merging: the server
+                    // echo of our optimistic message carries data: urls (or
+                    // server-local paths), while the optimistic message holds
+                    // the renderable file:// uri. The old code merged first
+                    // (backup still empty, so server urls won) and only
+                    // patched things up afterwards — leaving blank image boxes
+                    // whenever the patch-up missed.
+                    let salvagedLocalFileUrls: string[] = []
+                    if (info.role === "user") {
+                        const localIdx = existing.findIndex(m => m.id.startsWith("local-") && m.role === "user")
+                        if (localIdx >= 0) {
+                            const removed = existing[localIdx]
+                            for (const p of removed.parts ?? []) {
+                                if (p.type === "file" && p.url) salvagedLocalFileUrls.push(p.url)
+                            }
+                            existing.splice(localIdx, 1)
+                            // Keep the legacy queue topped up for file parts
+                            // that arrive via message.part.updated later.
+                            localFileUriBackup.push(...salvagedLocalFileUrls)
+                        }
+                    }
+
+                    // Only substitute a local uri where the server url isn't
+                    // renderable on-device. Renderable server urls (data:,
+                    // https:) are authoritative and permanent; device cache
+                    // files can be evicted.
                     const swapInLocalUris = (parts: Part[]): Part[] => {
-                        if (localFileUriBackup.length === 0) return parts
+                        if (salvagedLocalFileUrls.length === 0) return parts
+                        let i = 0
                         return parts.map((p) => {
-                            if (p.type === "file" && localFileUriBackup.length > 0) {
-                                const localUri = localFileUriBackup.shift()!
-                                return { ...p, url: localUri } as Part
+                            if (p.type === "file" && !isRenderableFileUrl(p.url) && i < salvagedLocalFileUrls.length) {
+                                return { ...p, url: salvagedLocalFileUrls[i++] } as Part
                             }
                             return p
                         })
                     }
 
+                    const existingIdx = existing.findIndex(m => m.id === info.id)
                     if (existingIdx >= 0) {
-                        const existingMsg = existing[existingIdx]
-                        const baseParts = (existingMsg.parts?.length ? existingMsg.parts : infoParts) as Part[]
-                        existing[existingIdx] = { ...info, parts: swapInLocalUris([...baseParts]) } as Message
+                        if (info.role === "user") {
+                            // Server parts are authoritative for user messages
+                            // (no text deltas to preserve); just fix up urls.
+                            existing[existingIdx] = { ...info, parts: swapInLocalUris([...infoParts]) } as Message
+                        } else {
+                            const existingMsg = existing[existingIdx]
+                            const baseParts = (existingMsg.parts?.length ? existingMsg.parts : infoParts) as Part[]
+                            existing[existingIdx] = { ...info, parts: swapInLocalUris([...baseParts]) } as Message
+                        }
                     } else {
                         existing.push({ ...info, parts: swapInLocalUris([...infoParts]) } as Message)
-                    }
-
-                    if (info.role === "user") {
-                        for (let i = 0; i < existing.length; i++) {
-                            if (existing[i].id.startsWith("local-") && existing[i].role === "user") {
-                                const removed = existing[i]
-                                for (const p of removed.parts ?? []) {
-                                    if (p.type === "file" && p.url) localFileUriBackup.push(p.url)
-                                }
-                                existing.splice(i, 1)
-                                // New server message may already be in the list with
-                                // unrenderable urls — swap salvaged local uris into it.
-                                for (let j = existing.length - 1; j >= 0; j--) {
-                                    if (existing[j].id === info.id && localFileUriBackup.length > 0) {
-                                        const msg = existing[j]
-                                        const parts = (msg.parts ?? []).map((p) => {
-                                            if (p.type === "file" && localFileUriBackup.length > 0) {
-                                                const localUri = localFileUriBackup.shift()!
-                                                return { ...p, url: localUri } as Part
-                                            }
-                                            return p
-                                        })
-                                        existing[j] = { ...msg, parts } as Message
-                                        break
-                                    }
-                                }
-                                break
-                            }
-                        }
                     }
 
                     scheduleFlush()
@@ -379,6 +402,16 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     const msg = existing[msgIdx]
                     const parts = msg.parts ?? []
                     const partIdx = parts.findIndex(p => p.id === effectivePart.id)
+
+                    // Never clobber a renderable file url with an unrenderable
+                    // server snapshot (server-local path, bare filename).
+                    if (effectivePart.type === "file" && partIdx >= 0 && parts[partIdx].type === "file") {
+                        const currentUrl = (parts[partIdx] as { url?: unknown }).url
+                        const incomingUrl = (effectivePart as { url?: unknown }).url
+                        if (isRenderableFileUrl(currentUrl) && !isRenderableFileUrl(incomingUrl)) {
+                            effectivePart = { ...effectivePart, url: currentUrl } as MessagePart
+                        }
+                    }
 
                     // Official opencode event carries incremental `delta` alongside the
                     // `part` snapshot. The snapshot alone can be stale/empty for
@@ -603,6 +636,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
             if (abort.signal.aborted) return
             if (reconnectAttempts >= maxReconnectAttempts) {
                 setConnectionStatus("error")
+                log("SSE", `session ${sid} reconnect limit reached`, "error")
                 return
             }
 
@@ -615,6 +649,8 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                 setConnectionStatus("connectivity-issues")
             }
 
+            log("SSE", `session ${sid} reconnecting #${reconnectAttempts} in ${delay}ms`, "warn")
+
             reconnectTimer = setTimeout(() => {
                 if (!abort.signal.aborted) {
                     connect()
@@ -624,6 +660,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
 
         async function connect() {
             try {
+                log("SSE", `session ${sid} connecting`, "debug")
                 const response = await fetch(eventUrl, {
                     method: "POST",
                     headers: {
@@ -637,6 +674,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
 
                 if (!response.ok) {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} failed: HTTP ${response.status}`, "warn")
                     scheduleReconnect()
                     return
                 }
@@ -644,6 +682,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                 const reader = response.body?.getReader()
                 if (!reader) {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} failed: no response body`, "warn")
                     scheduleReconnect()
                     return
                 }
@@ -659,6 +698,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     if (!connected) {
                         connected = true
                         setConnectionStatus("connected")
+                        log("SSE", `session ${sid} connected`, "info")
                     }
 
                     buffer += decoder.decode(value, { stream: true })
@@ -707,6 +747,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
                     // Expected on cleanup
                 } else {
                     setConnectionStatus("error")
+                    log("SSE", `session ${sid} error: ${(err as Error).message}`, "error")
                     scheduleReconnect()
                 }
             }
@@ -724,6 +765,7 @@ export function useEventStream(url?: string, sessionId?: string, token?: string,
             setConnectionStatus("disconnected")
             setStreaming(sid, false)
             setActiveMessageId(sid, null)
+            log("SSE", `session ${sid} closed`, "debug")
         }
     }, [sessionId, url, token, projectId])
 }

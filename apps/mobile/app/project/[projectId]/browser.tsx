@@ -12,7 +12,7 @@ import XIcon from "lucide-react-native/dist/esm/icons/x"
 import { Button } from "@/components/ui/button"
 import { Text } from "@/components/ui/text"
 import { THEME } from "@/lib/theme"
-import { useConnections } from "@/store/connection.store"
+import { useProjectConnection } from "@/lib/project-connection"
 import { useProjects } from "@/store/projects.store"
 import {
     buildBreadcrumbs,
@@ -75,9 +75,7 @@ export default function BrowserPage() {
     const t = THEME[theme]
     const { projectId } = useLocalSearchParams<{ projectId: string }>()
 
-    const connections = useConnections((s) => s.connections)
-    const current = useConnections((s) => s.current)
-    const connection = connections.find((c) => c.id === current) ?? null
+    const { connection } = useProjectConnection(projectId)
     const connected = !!(connection?.url && connection?.token)
     const project = useProjects((s) => s.projects.find((p) => p.id === projectId))
     const rootLabel = useMemo(() => {

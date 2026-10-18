@@ -86,9 +86,12 @@ export function BarChart({
 }
 
 export function StatusRow({ data }: { data: WidgetData }) {
-  const label = data.connected
-    ? data.serverName || "Connected"
-    : "Not connected"
+  const label =
+    data.totalCount === 0
+      ? "No connections"
+      : data.connected
+        ? `${data.connectedCount}/${data.totalCount} connected`
+        : "All unreachable"
   return (
     <FlexWidget
       style={{
@@ -105,6 +108,44 @@ export function StatusRow({ data }: { data: WidgetData }) {
       {data.pendingQuestions > 0 ? (
         <TextWidget
           text={`${data.pendingQuestions} pending`}
+          style={{ color: COLORS.pending, fontSize: 12 }}
+        />
+      ) : null}
+    </FlexWidget>
+  )
+}
+
+export function ConnectionStatusRow({
+  name,
+  healthy,
+  pendingQuestions,
+}: {
+  name: string
+  healthy: boolean | null
+  pendingQuestions: number
+}) {
+  const connected = healthy !== false
+  const label = name || "Connection"
+  const badge = healthy === false ? "Unreachable" : healthy == null ? "Checking…" : "Connected"
+  const badgeColor =
+    healthy === false ? COLORS.disconnected : healthy == null ? COLORS.muted : COLORS.connected
+  return (
+    <FlexWidget
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexGap: 6,
+      }}
+    >
+      <TextWidget
+        text={connected ? "●" : "○"}
+        style={{ color: connected ? COLORS.connected : COLORS.disconnected, fontSize: 12 }}
+      />
+      <TextWidget text={label} style={{ color: COLORS.text, fontSize: 13, fontWeight: "bold" }} maxLines={1} truncate="END" />
+      <TextWidget text={badge} style={{ color: badgeColor, fontSize: 12 }} />
+      {pendingQuestions > 0 ? (
+        <TextWidget
+          text={`${pendingQuestions} pending`}
           style={{ color: COLORS.pending, fontSize: 12 }}
         />
       ) : null}

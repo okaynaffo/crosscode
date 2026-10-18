@@ -96,6 +96,8 @@ crosscode -h
 | `--cloudflared` | Force Cloudflare tunnel (`cloudflared` binary required) |
 | `--ngrok` | Force ngrok tunnel (`ngrok` binary + auth token required) |
 | `--no-open` | Don't auto-open the connection page in a browser |
+| `--no-qr` | Skip QR graphic, print URL only (useful when piping output) |
+| `--small-qr` | Compact QR graphic with smaller quiet zone (same scannable full-cell rendering) |
 | `--help`, `-h` | Show help message |
 
 ## Connection Page

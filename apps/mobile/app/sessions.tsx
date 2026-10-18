@@ -1,7 +1,7 @@
 import * as React from "react"
 import { ActivityIndicator, Modal, Pressable, RefreshControl, SectionList, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
-import { useRouter } from "expo-router"
+import { useLocalSearchParams, useRouter } from "expo-router"
 import { useColorScheme } from "nativewind"
 
 import { Text } from "@/components/ui/text"
@@ -201,14 +201,16 @@ export default function SessionsScreen() {
   const { colorScheme } = useColorScheme()
   const connections = useConnections((s) => s.connections)
   const current = useConnections((s) => s.current)
+  const { connectionId: connectionIdParam } = useLocalSearchParams<{ connectionId?: string }>()
   const projects = useProjects((s) => s.projects)
   const sessions = useSessions((s) => s.sessions)
   const upsertSessions = useSessions((s) => s.upsertSessions)
 
   const theme = colorScheme ?? "light"
 
-  const connection = React.useMemo(() => connections.find((c) => c.id === current) ?? null, [connections, current])
-  const project = React.useMemo(() => projects.find((p) => p.connectionId === current) ?? null, [projects, current])
+  const resolvedConnectionId = connectionIdParam ?? current
+  const connection = React.useMemo(() => connections.find((c) => c.id === resolvedConnectionId) ?? null, [connections, resolvedConnectionId])
+  const project = React.useMemo(() => projects.find((p) => p.connectionId === resolvedConnectionId) ?? null, [projects, resolvedConnectionId])
 
   useGlobalSessionStatus(connection?.url, connection?.token)
 

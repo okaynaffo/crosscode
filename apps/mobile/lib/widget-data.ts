@@ -6,6 +6,9 @@ const CONNECTIONS_KEY = "crosscode-connections"
 const SESSIONS_KEY = "crosscode-sessions"
 const STATS_KEY = "crosscode-opencode-stats"
 const QUESTIONS_KEY = "crosscode-questions"
+const PROJECTS_KEY = "crosscode-projects"
+/** widget instance (`"${widgetName}:${widgetId}"`) -> connection id chosen in the config screen. */
+const WIDGET_CONNECTIONS_KEY = "crosscode-widget-connections"
 
 type Persisted<T> = { state: T }
 
@@ -30,6 +33,13 @@ interface Session {
   agent?: string
   time: { created: number; updated: number }
   summary?: SessionSummary
+}
+
+interface StoredProject {
+  id: string
+  name: string
+  directory: string
+  connectionId: string
 }
 
 interface ProjectStats {
@@ -91,8 +101,11 @@ export interface ProjectWidgetData {
 }
 
 export interface WidgetData {
+  /** True when at least one connection is reachable. */
   connected: boolean
-  serverName: string
+  connectedCount: number
+  unreachableCount: number
+  totalCount: number
   hasSession: boolean
   sessionTitle: string
   sessionAgent: string
@@ -108,38 +121,86 @@ export interface WidgetData {
   projects: ProjectWidgetData[]
 }
 
-export async function buildWidgetData(): Promise<WidgetData> {
-  const [connections, sessionsState, statsState, questions] = await Promise.all([
-    readPersisted<{ connections: Connection[]; current: string | null }>(CONNECTIONS_KEY),
-    readPersisted<{ sessions: Session[] }>(SESSIONS_KEY),
-    readPersisted<{ projects: Record<string, ProjectStats> }>(STATS_KEY),
-    readPersisted<{ questionsBySession: Record<string, unknown[]> }>(QUESTIONS_KEY),
-  ])
-  const stats = statsState?.projects
-  const sessions = sessionsState?.sessions
+export interface ConnectionWidgetData extends WidgetData {
+  connectionId: string | null
+  connectionName: string
+  connectionHealthy: boolean | null
+}
 
-  const currentId = connections?.current
-  const current =
-    connections?.connections.find((c) => c.id === currentId) ??
-    connections?.connections[0]
-  const connected = Boolean(current && current.healthy !== false && current.url)
+export function widgetInstanceKey(widgetName: string, widgetId: number): string {
+  return `${widgetName}:${widgetId}`
+}
 
-  const allSessions = sessions ?? []
-  const activeSession = allSessions.length
-    ? [...allSessions].sort((a, b) => b.time.updated - a.time.updated)[0]
-    : undefined
+async function readWidgetConnections(): Promise<Record<string, string>> {
+  try {
+    const raw = await AsyncStorage.getItem(WIDGET_CONNECTIONS_KEY)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === "object" ? parsed : {}
+  } catch {
+    return {}
+  }
+}
 
-  const pendingQuestions = questions
-    ? Object.values(questions.questionsBySession ?? {}).reduce<number>(
-        (sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0),
-        0
-      )
-    : 0
+export async function getWidgetConnectionId(
+  widgetName: string,
+  widgetId: number
+): Promise<string | null> {
+  const map = await readWidgetConnections()
+  return map[widgetInstanceKey(widgetName, widgetId)] ?? null
+}
 
-  const days = last7Days()
-  const today = todayKey()
-  const projectsMap = stats ?? {}
-  const projects: ProjectWidgetData[] = Object.values(projectsMap)
+export async function setWidgetConnectionId(
+  widgetName: string,
+  widgetId: number,
+  connectionId: string | null
+): Promise<void> {
+  const map = await readWidgetConnections()
+  const key = widgetInstanceKey(widgetName, widgetId)
+  if (connectionId) {
+    map[key] = connectionId
+  } else {
+    delete map[key]
+  }
+  await AsyncStorage.setItem(WIDGET_CONNECTIONS_KEY, JSON.stringify(map))
+}
+
+interface LoadedState {
+  connections: Connection[]
+  sessions: Session[]
+  projectsMap: Record<string, ProjectStats>
+  storedProjects: StoredProject[]
+  pendingQuestions: number
+}
+
+async function loadState(): Promise<LoadedState> {
+  const [connectionsState, sessionsState, statsState, questions, projectsState] =
+    await Promise.all([
+      readPersisted<{ connections: Connection[]; current: string | null }>(CONNECTIONS_KEY),
+      readPersisted<{ sessions: Session[] }>(SESSIONS_KEY),
+      readPersisted<{ projects: Record<string, ProjectStats> }>(STATS_KEY),
+      readPersisted<{ questionsBySession: Record<string, unknown[]> }>(QUESTIONS_KEY),
+      readPersisted<{ projects: StoredProject[] }>(PROJECTS_KEY),
+    ])
+  return {
+    connections: connectionsState?.connections ?? [],
+    sessions: sessionsState?.sessions ?? [],
+    projectsMap: statsState?.projects ?? {},
+    storedProjects: projectsState?.projects ?? [],
+    pendingQuestions: questions
+      ? Object.values(questions.questionsBySession ?? {}).reduce<number>(
+          (sum, arr) => sum + (Array.isArray(arr) ? arr.length : 0),
+          0
+        )
+      : 0,
+  }
+}
+
+function toProjectWidgets(
+  stats: ProjectStats[],
+  days: string[]
+): ProjectWidgetData[] {
+  return stats
     .map((p) => ({
       id: p.projectId,
       name: p.projectName,
@@ -152,9 +213,11 @@ export async function buildWidgetData(): Promise<WidgetData> {
     }))
     .sort((a, b) => (b.lastResponseAt ?? "").localeCompare(a.lastResponseAt ?? ""))
     .slice(0, 5)
+}
 
+function aggregateHistory(stats: ProjectStats[]): Record<string, DailyBucket> {
   const globalHistory: Record<string, DailyBucket> = {}
-  for (const p of Object.values(projectsMap)) {
+  for (const p of stats) {
     for (const [day, bucket] of Object.entries(p.dailyHistory ?? {})) {
       const agg = globalHistory[day] ?? {
         inputTokens: 0,
@@ -169,7 +232,25 @@ export async function buildWidgetData(): Promise<WidgetData> {
       globalHistory[day] = agg
     }
   }
+  return globalHistory
+}
 
+function buildData(
+  connections: Connection[],
+  sessions: Session[],
+  stats: ProjectStats[],
+  pendingQuestions: number
+): WidgetData {
+  const connectedCount = connections.filter((c) => c.healthy !== false && c.url).length
+  const unreachableCount = connections.filter((c) => c.healthy === false).length
+
+  const activeSession = sessions.length
+    ? [...sessions].sort((a, b) => b.time.updated - a.time.updated)[0]
+    : undefined
+
+  const days = last7Days()
+  const today = todayKey()
+  const globalHistory = aggregateHistory(stats)
   const todayBucket = globalHistory[today] ?? {
     inputTokens: 0,
     outputTokens: 0,
@@ -178,8 +259,10 @@ export async function buildWidgetData(): Promise<WidgetData> {
   }
 
   return {
-    connected: Boolean(connected),
-    serverName: current?.name ?? "",
+    connected: connectedCount > 0,
+    connectedCount,
+    unreachableCount,
+    totalCount: connections.length,
     hasSession: Boolean(activeSession),
     sessionTitle: activeSession?.title ?? "",
     sessionAgent: activeSession?.agent ?? "",
@@ -192,7 +275,55 @@ export async function buildWidgetData(): Promise<WidgetData> {
     todayOutputTokens: todayBucket.outputTokens,
     todayCost: todayBucket.cost,
     weekOutputTokens: days.map((d) => globalHistory[d]?.outputTokens ?? 0),
-    projects,
+    projects: toProjectWidgets(stats, days),
+  }
+}
+
+/** Overall stats across ALL connections. */
+export async function buildWidgetData(): Promise<WidgetData> {
+  const { connections, sessions, projectsMap, pendingQuestions } = await loadState()
+  return buildData(connections, sessions, Object.values(projectsMap), pendingQuestions)
+}
+
+/**
+ * Stats scoped to a single connection (chosen per widget instance in the
+ * config screen). Falls back to the aggregate when the id is missing so the
+ * widget never renders empty after a connection is deleted.
+ */
+export async function buildConnectionWidgetData(
+  connectionId: string | null
+): Promise<ConnectionWidgetData> {
+  const { connections, sessions, projectsMap, storedProjects, pendingQuestions } =
+    await loadState()
+  const connection = connections.find((c) => c.id === connectionId) ?? null
+
+  if (!connection) {
+    return {
+      ...(await buildWidgetData()),
+      connectionId: null,
+      connectionName: "",
+      connectionHealthy: null,
+    }
+  }
+
+  const ownedProjectIds = new Set(
+    storedProjects.filter((p) => p.connectionId === connection.id).map((p) => p.id)
+  )
+  const ownedDirectories = new Set(
+    storedProjects.filter((p) => p.connectionId === connection.id).map((p) => p.directory)
+  )
+  const ownSessions = sessions.filter(
+    (s) => ownedProjectIds.has(s.projectID) || ownedDirectories.has(s.directory)
+  )
+  const ownStats = Object.values(projectsMap).filter((p) =>
+    ownedProjectIds.has(p.projectId)
+  )
+
+  return {
+    ...buildData([connection], ownSessions, ownStats, pendingQuestions),
+    connectionId: connection.id,
+    connectionName: connection.name,
+    connectionHealthy: connection.healthy ?? null,
   }
 }
 
